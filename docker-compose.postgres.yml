@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: evalom-postgres
+    environment:
+      POSTGRES_DB: evalom
+      POSTGRES_USER: evalom
+      POSTGRES_PASSWORD: ${EVALOM_POSTGRES_PASSWORD:?Set EVALOM_POSTGRES_PASSWORD before starting Postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evalom -d evalom"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:

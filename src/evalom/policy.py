@@ -14,8 +14,22 @@ _POLICY_FIELDS = {
     "min_statistical_confidence",
     "max_duplicate_ratio",
     "max_distribution_shift",
+    "confidence_level",
     "allowed_issues",
 }
+
+
+def _normalize_confidence_level(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("confidence_level must be a finite number between 0 and 1, or a percentage between 1 and 100.")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError("confidence_level must be finite.")
+    if 0.0 < numeric < 1.0:
+        return numeric
+    if 1.0 <= numeric <= 100.0:
+        return numeric / 100.0
+    raise ValueError("confidence_level must be in the open interval (0, 1) or a percentage between 1 and 100.")
 
 
 @dataclass
@@ -29,6 +43,7 @@ class ReleasePolicy:
     min_statistical_confidence: float = 0.75
     max_duplicate_ratio: float = 0.05
     max_distribution_shift: float = 0.35
+    confidence_level: float = 0.95
     allowed_issues: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -42,7 +57,6 @@ class ReleasePolicy:
             "min_confidence_score",
             "min_dataset_quality",
             "min_evaluator_reliability",
-            "min_statistical_confidence",
             "max_duplicate_ratio",
             "max_distribution_shift",
         ):
@@ -56,6 +70,17 @@ class ReleasePolicy:
                     f"{name} must be between 0 and {upper_bound:g}."
                 )
             setattr(self, name, numeric_value)
+
+        for name in ("min_statistical_confidence",):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a finite number.")
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value) or numeric_value < 0.0:
+                raise ValueError(f"{name} must be a finite, non-negative number.")
+            setattr(self, name, numeric_value)
+
+        self.confidence_level = _normalize_confidence_level(self.confidence_level)
 
         if not isinstance(self.allowed_issues, list) or any(
             not isinstance(issue, str) or not issue.strip()
@@ -86,6 +111,7 @@ class ReleasePolicy:
             min_statistical_confidence=payload.get("min_statistical_confidence", 0.75),
             max_duplicate_ratio=payload.get("max_duplicate_ratio", 0.05),
             max_distribution_shift=payload.get("max_distribution_shift", 0.35),
+            confidence_level=payload.get("confidence_level", 0.95),
             allowed_issues=allowed_issues,
         )
 
@@ -102,6 +128,7 @@ class ReleasePolicy:
         dataset_quality = float(summary.get("dataset_quality", summary.get("dataset_health", {}).get("quality_score", 0.0)))
         evaluator_reliability = float(summary.get("evaluator_reliability", 0.0))
         statistical_confidence = float(summary.get("statistical_confidence", 0.0))
+        lower_bound = float(summary.get("lower_confidence_bound", summary.get("confidence_interval", {}).get("lower", statistical_confidence)))
         dataset_health = summary.get("dataset_health") if isinstance(summary.get("dataset_health"), dict) else {}
         duplicate_ratio = float(dataset_health.get("duplicate_ratio", 0.0))
         distribution_shift = float(dataset_health.get("distribution_shift", 0.0))
@@ -124,9 +151,9 @@ class ReleasePolicy:
             failures.append(
                 f"Evaluator reliability {evaluator_reliability:.4f} is below the required minimum of {self.min_evaluator_reliability:.4f}."
             )
-        if statistical_confidence < self.min_statistical_confidence:
+        if lower_bound < self.min_statistical_confidence:
             failures.append(
-                f"Statistical confidence {statistical_confidence:.4f} is below the required minimum of {self.min_statistical_confidence:.4f}."
+                f"Lower confidence bound {lower_bound:.4f} is below the required minimum of {self.min_statistical_confidence:.4f}."
             )
         if duplicate_ratio > self.max_duplicate_ratio:
             failures.append(
@@ -154,6 +181,9 @@ class ReleasePolicy:
             "dataset_quality": dataset_quality,
             "evaluator_reliability": evaluator_reliability,
             "statistical_confidence": statistical_confidence,
+            "lower_confidence_bound": lower_bound,
+            "confidence_level": self.confidence_level,
+            "minimum_statistical_confidence": self.min_statistical_confidence,
             "duplicate_ratio": duplicate_ratio,
             "distribution_shift": distribution_shift,
             "failures": failures,
@@ -169,6 +199,7 @@ class ReleasePolicy:
             "min_statistical_confidence": float(self.min_statistical_confidence),
             "max_duplicate_ratio": float(self.max_duplicate_ratio),
             "max_distribution_shift": float(self.max_distribution_shift),
+            "confidence_level": float(self.confidence_level),
             "allowed_issues": list(self.allowed_issues),
         }
 

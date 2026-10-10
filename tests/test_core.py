@@ -207,6 +207,45 @@ def test_run_command_applies_configured_release_policy(tmp_path: Path):
     assert stored["metadata"]["policy_decision"]["passed"] is False
 
 
+def test_verification_uses_wilson_lower_bound_for_binary_metrics():
+    result = EvaluationRunResult(
+        dataset_name="demo",
+        dataset_version="v1",
+        total_samples=10,
+        metrics=[
+            {"name": "exact_match", "score": 1.0, "passed": True},
+            {"name": "exact_match", "score": 1.0, "passed": True},
+            {"name": "exact_match", "score": 0.0, "passed": False},
+            {"name": "exact_match", "score": 1.0, "passed": True},
+        ],
+    )
+
+    verification = VerificationEngine().verify(result)
+
+    assert verification.confidence_interval["lower"] is not None
+    assert verification.statistical_confidence == verification.confidence_interval["lower"]
+    assert verification.confidence_interval["lower"] <= 0.75
+    assert verification.confidence_interval["upper"] >= verification.confidence_interval["lower"]
+
+
+def test_release_policy_uses_lower_bound_not_heuristic_score():
+    policy = ReleasePolicy(min_statistical_confidence=0.55, confidence_level=95)
+    decision = policy.evaluate({
+        "risk_level": "LOW",
+        "confidence_score": 90.0,
+        "dataset_quality": 0.9,
+        "evaluator_reliability": 0.9,
+        "statistical_confidence": 0.7,
+        "confidence_interval": {"lower": 0.4, "upper": 0.8},
+        "issues": [],
+    })
+
+    assert policy.confidence_level == 0.95
+    assert decision["passed"] is False
+    assert decision["decision"] == "BLOCK"
+    assert "Lower confidence bound 0.4000 is below the required minimum of 0.5500." in decision["failures"]
+
+
 def test_experiment_api_persists_records_and_paginates(tmp_path: Path):
     database_path = tmp_path / "data" / "experiments.db"
     client = TestClient(create_app(database_path=database_path))

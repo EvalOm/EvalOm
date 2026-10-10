@@ -125,7 +125,9 @@ This is the first step toward the broader product vision described in the projec
 
 ## Release policy layer
 
-The latest milestone adds a policy layer that turns verification output into a deployment recommendation. Instead of using raw score averages alone, EvalOm can evaluate a verification summary against explicit policy thresholds.
+The latest milestone adds a policy layer that turns verification output into a deployment recommendation. Instead of using raw score averages alone, EvalOm evaluates the lower confidence bound from a confidence interval against explicit policy thresholds.
+
+For binary or pass/fail metrics, the engine uses a Wilson score interval; for continuous metrics it uses a bootstrap percentile interval. The default confidence level is 95%, and release gates compare the interval's lower bound rather than a heuristic sample-size score.
 
 Example:
 
@@ -138,11 +140,13 @@ policy = ReleasePolicy(
     min_dataset_quality=0.75,
     min_evaluator_reliability=0.80,
     min_statistical_confidence=0.75,
+    confidence_level=0.95,
 )
 
 result = verification_engine.verify(run_result)
 decision = policy.evaluate(result)
 print(decision["decision"])  # ALLOW or BLOCK
+print(decision["lower_confidence_bound"])  # lower bound used for the release gate
 ```
 
 This lets the project move from "we scored this run" to "should we allow this run to gate release?" without yet adding a full multi-tenant SaaS control plane.
@@ -164,13 +168,16 @@ release_policy:
   min_dataset_quality: 0.75
   min_evaluator_reliability: 0.8
   min_statistical_confidence: 0.75
+  confidence_level: 0.95
   max_duplicate_ratio: 0.05
   max_distribution_shift: 0.35
 ```
 
 When configured, `evalom run` includes verification and policy results in its JSON report and stored experiment metadata. A `BLOCK` decision exits with status `1`, making the configured policy an effective release gate. Configurations without `release_policy` keep their existing run behavior.
 
-Policy configuration is validated before use: risk levels must be `LOW`, `MEDIUM`, or `HIGH`; confidence thresholds must be between `0` and `100`; quality, reliability, duplicate, and distribution thresholds must be between `0` and `1`; and unknown keys or malformed `allowed_issues` entries are rejected.
+The policy evaluates `lower_confidence_bound` from the verification result and compares it directly to `min_statistical_confidence`. The verification object also exposes `confidence_level` and `lower_confidence_bound` so callers can inspect the exact statistical gate being enforced.
+
+Policy configuration is validated before use: risk levels must be `LOW`, `MEDIUM`, or `HIGH`; confidence thresholds must be between `0` and `100`; confidence levels must be between `0` and `1` or `1` and `100`; quality, reliability, duplicate, and distribution thresholds must be between `0` and `1`; and unknown keys or malformed `allowed_issues` entries are rejected.
 
 Configured metric quality gates also fail when an evaluation produces no scores for that metric, rather than silently skipping the gate.
 

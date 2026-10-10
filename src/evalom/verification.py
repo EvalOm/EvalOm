@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import random
+import statistics
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -14,6 +17,92 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
 def _average(values: Iterable[float]) -> float:
     numbers = [float(value) for value in values]
     return sum(numbers) / len(numbers) if numbers else 0.0
+
+
+def _normalize_confidence_level(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("confidence_level must be a finite number between 0 and 1, or a percentage between 1 and 100.")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError("confidence_level must be finite.")
+    if 0.0 < numeric < 1.0:
+        return numeric
+    if 1.0 <= numeric <= 100.0:
+        return numeric / 100.0
+    raise ValueError("confidence_level must be in the open interval (0, 1) or a percentage between 1 and 100.")
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _normal_quantile(probability: float) -> float:
+    return statistics.NormalDist().inv_cdf(probability)
+
+
+def _wilson_interval(successes: int, total: int, confidence_level: float) -> dict[str, float | None]:
+    if total <= 0:
+        return {"lower": None, "upper": None}
+    if successes < 0 or successes > total:
+        raise ValueError("successes must be between 0 and total.")
+
+    p_hat = successes / total
+    z_value = _normal_quantile((1.0 + confidence_level) / 2.0)
+    denominator = 1.0 + (z_value ** 2) / total
+    center = (p_hat + (z_value ** 2) / (2.0 * total)) / denominator
+    margin = (z_value * math.sqrt((p_hat * (1.0 - p_hat) / total) + ((z_value ** 2) / (4.0 * total ** 2)))) / denominator
+    lower = center - margin
+    upper = center + margin
+    return {
+        "lower": float(max(0.0, min(1.0, lower))),
+        "upper": float(max(0.0, min(1.0, upper))),
+    }
+
+
+def _bootstrap_mean_interval(values: list[float], confidence_level: float, *, resamples: int = 1000, random_seed: int | None = 0) -> dict[str, float | None]:
+    if not values:
+        return {"lower": None, "upper": None}
+
+    values = [float(value) for value in values]
+    observed_mean = sum(values) / len(values)
+    if all(value == values[0] for value in values):
+        return {"lower": float(values[0]), "upper": float(values[0])}
+
+    rng = random.Random(random_seed)
+    sample_means: list[float] = []
+    for _ in range(max(1, int(resamples))):
+        sample = [values[rng.randrange(len(values))] for _ in range(len(values))]
+        sample_means.append(sum(sample) / len(sample))
+
+    sample_means.sort()
+    alpha = (1.0 - confidence_level) / 2.0
+    lower = _percentile(sample_means, alpha)
+    upper = _percentile(sample_means, 1.0 - alpha)
+    if lower is None or upper is None:
+        return {"lower": observed_mean, "upper": observed_mean}
+    return {"lower": float(lower), "upper": float(upper)}
+
+
+def _percentile(sorted_values: list[float], probability: float) -> float | None:
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    position = probability * (len(sorted_values) - 1)
+    lower_index = int(math.floor(position))
+    upper_index = int(math.ceil(position))
+    if lower_index == upper_index:
+        return float(sorted_values[lower_index])
+    lower_value = sorted_values[lower_index]
+    upper_value = sorted_values[upper_index]
+    fraction = position - lower_index
+    return float(lower_value + (upper_value - lower_value) * fraction)
 
 
 def normalize_evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -94,8 +183,13 @@ class EvaluationVerificationResult:
     human_agreement: float | None = None
     dataset_health: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    confidence_level: float = 0.95
+    lower_confidence_bound: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        lower = self.confidence_interval.get("lower") if isinstance(self.confidence_interval, dict) else self.lower_confidence_bound
+        upper = self.confidence_interval.get("upper") if isinstance(self.confidence_interval, dict) else None
+        lower_bound = self.lower_confidence_bound if self.lower_confidence_bound is not None else lower
         return {
             "confidence_score": round(self.confidence_score, 2),
             "risk_level": self.risk_level,
@@ -103,11 +197,13 @@ class EvaluationVerificationResult:
             "evaluator_reliability": round(self.evaluator_reliability, 4),
             "dataset_quality": round(self.dataset_quality, 4),
             "statistical_confidence": round(self.statistical_confidence, 4),
+            "lower_confidence_bound": round(float(lower_bound), 4) if lower_bound is not None else None,
+            "confidence_level": round(float(self.confidence_level), 4),
             "evaluator_agreement": self.evaluator_agreement,
             "human_agreement": self.human_agreement,
             "confidence_interval": {
-                "lower": round(float(self.confidence_interval.get("lower", 0.0)), 4),
-                "upper": round(float(self.confidence_interval.get("upper", 0.0)), 4),
+                "lower": round(float(lower), 4) if lower is not None else None,
+                "upper": round(float(upper), 4) if upper is not None else None,
             },
             "failure_breakdown": dict(self.failure_breakdown),
             "dataset_health": dict(self.dataset_health),
@@ -126,11 +222,17 @@ class VerificationEngine:
         minimum_dataset_quality: float = 0.75,
         minimum_evaluator_reliability: float = 0.8,
         minimum_statistical_confidence: float = 0.75,
+        confidence_level: float = 0.95,
+        bootstrap_samples: int = 1000,
+        random_seed: int | None = 0,
     ) -> None:
         self.minimum_sample_size = minimum_sample_size
         self.minimum_dataset_quality = minimum_dataset_quality
         self.minimum_evaluator_reliability = minimum_evaluator_reliability
         self.minimum_statistical_confidence = minimum_statistical_confidence
+        self.confidence_level = _normalize_confidence_level(confidence_level)
+        self.bootstrap_samples = max(10, int(bootstrap_samples))
+        self.random_seed = random_seed
 
     def analyze_dataset(self, dataset: EvaluationDataset | None, fallback_sample_size: int = 0) -> DatasetHealth:
         if dataset is None:
@@ -225,8 +327,54 @@ class VerificationEngine:
             evaluator_reliability = (evaluator_reliability + human_score) / 2.0
 
         effective_sample_size = dataset_health.sample_size or len(result.metrics) or result.total_samples
-        statistical_confidence = _clamp((effective_sample_size / max(self.minimum_sample_size, 1)) * 0.85, 0.0, 1.0)
-        statistical_confidence = _clamp(statistical_confidence * (1.0 - min(0.5, metric_variance * 1.5)), 0.0, 1.0)
+        heuristic_confidence = _clamp((effective_sample_size / max(self.minimum_sample_size, 1)) * 0.85, 0.0, 1.0)
+        heuristic_confidence = _clamp(heuristic_confidence * (1.0 - min(0.5, metric_variance * 1.5)), 0.0, 1.0)
+
+        metric_groups: dict[str, list[dict[str, Any]]] = {}
+        for item in result.metrics:
+            if not isinstance(item, dict):
+                continue
+            metric_name = str(item.get("name") or "unknown")
+            metric_groups.setdefault(metric_name, []).append(item)
+
+        candidates: list[dict[str, Any]] = []
+        for metric_name, metrics in metric_groups.items():
+            valid_scores: list[float] = []
+            successes = 0
+            metric_total = 0
+            for metric in metrics:
+                score = _safe_float(metric.get("score"))
+                if score is None:
+                    continue
+                valid_scores.append(score)
+                metric_total += 1
+                if metric.get("passed") is True or score == 1.0:
+                    successes += 1
+
+            if metric_total == 0:
+                continue
+
+            if all(score in (0.0, 1.0) for score in valid_scores):
+                interval = _wilson_interval(successes, metric_total, self.confidence_level)
+            else:
+                interval = _bootstrap_mean_interval(valid_scores, self.confidence_level, resamples=self.bootstrap_samples, random_seed=self.random_seed)
+
+            lower_bound = interval.get("lower")
+            if lower_bound is None:
+                continue
+            candidates.append({
+                "name": metric_name,
+                "lower_bound": float(lower_bound),
+                "interval": interval,
+            })
+
+        if candidates:
+            chosen = min(candidates, key=lambda candidate: candidate["lower_bound"])
+            confidence_interval = dict(chosen["interval"])
+            statistical_confidence = float(chosen["lower_bound"])
+        else:
+            confidence_interval = {"lower": None, "upper": None}
+            statistical_confidence = 0.0
 
         dataset_quality = max(dataset_health.quality_score, 0.0)
         if dataset_health.sample_size < self.minimum_sample_size:
@@ -235,14 +383,16 @@ class VerificationEngine:
         confidence_score = (
             evaluator_reliability * 0.4
             + dataset_quality * 0.35
-            + statistical_confidence * 0.25
+            + heuristic_confidence * 0.25
         ) * 100.0
 
         margin_of_error = 0.0 if not metric_scores else (1.96 * stddev / (len(metric_scores) ** 0.5))
-        confidence_interval = {
+        fallback_confidence_interval = {
             "lower": max(0.0, mean_score - margin_of_error),
             "upper": min(1.0, mean_score + margin_of_error),
         }
+        if confidence_interval.get("lower") is None or confidence_interval.get("upper") is None:
+            confidence_interval = fallback_confidence_interval
 
         failure_breakdown: dict[str, int] = {}
         for sample_result in result.sample_results:
@@ -260,7 +410,7 @@ class VerificationEngine:
             issues.append("Evaluator reliability is below the recommended threshold.")
         if dataset_quality < self.minimum_dataset_quality:
             issues.append("Dataset quality is too weak to support a high-confidence release decision.")
-        if statistical_confidence < self.minimum_statistical_confidence:
+        if metric_scores and statistical_confidence < self.minimum_statistical_confidence:
             issues.append("Sample size or variance makes the evaluation statistically weak.")
         if dataset_health.duplicate_ratio > 0.05:
             issues.append(f"Detected {dataset_health.duplicate_ratio:.2%} duplicate or repeated inputs in the dataset.")
@@ -306,6 +456,8 @@ class VerificationEngine:
                 "metrics": result.metrics,
                 "dataset_hash": dataset_hash,
             },
+            confidence_level=self.confidence_level,
+            lower_confidence_bound=statistical_confidence,
         )
 
 

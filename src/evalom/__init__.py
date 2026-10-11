@@ -7,6 +7,20 @@ from .evaluators import BaseEvaluator, ContainsEvaluator, ExactMatchEvaluator, M
 from .experiment import ExperimentRecord, ExperimentTracker
 from .policy import ReleasePolicy, evaluate_verification_policy
 from .reports import generate_html_report, generate_json_report
+from .riav import (
+    AssessmentStatus,
+    ConfusionMatrixMetrics,
+    EvalOmAssessment,
+    GroundTruthComparisonResult,
+    ReferenceOutcome,
+    assess_ground_truth,
+    calculate_confusion_matrix_metrics,
+    compare_assessment_to_reference,
+    compare_ground_truth,
+    compute_confusion_matrix_metrics,
+    normalize_assessment_decision,
+    normalize_reference_label,
+)
 from .runner import EvaluationRunResult, EvaluationRunner
 from .verification import (
     DatasetHealth,
@@ -37,6 +51,18 @@ __all__ = [
     "ExperimentTracker",
     "ReleasePolicy",
     "evaluate_verification_policy",
+    "AssessmentStatus",
+    "ReferenceOutcome",
+    "EvalOmAssessment",
+    "GroundTruthComparisonResult",
+    "ConfusionMatrixMetrics",
+    "compare_assessment_to_reference",
+    "compare_ground_truth",
+    "assess_ground_truth",
+    "compute_confusion_matrix_metrics",
+    "calculate_confusion_matrix_metrics",
+    "normalize_reference_label",
+    "normalize_assessment_decision",
     "generate_json_report",
     "generate_html_report",
     "EvaluationImportLayer",

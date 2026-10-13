@@ -16,6 +16,7 @@ _POLICY_FIELDS = {
     "max_distribution_shift",
     "confidence_level",
     "allowed_issues",
+    "block_on_issues",
 }
 
 
@@ -45,6 +46,7 @@ class ReleasePolicy:
     max_distribution_shift: float = 0.35
     confidence_level: float = 0.95
     allowed_issues: list[str] = field(default_factory=list)
+    block_on_issues: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.max_risk_level, str):

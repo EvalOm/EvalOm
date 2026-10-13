@@ -82,11 +82,13 @@ class ReleasePolicy:
 
         self.confidence_level = _normalize_confidence_level(self.confidence_level)
 
-        if not isinstance(self.allowed_issues, list) or any(
-            not isinstance(issue, str) or not issue.strip()
-            for issue in self.allowed_issues
-        ):
-            raise ValueError("allowed_issues must be a list of non-empty strings.")
+          if not isinstance(self.allowed_issues, list) or any(
+              not isinstance(issue, str) or not issue.strip()
+              for issue in self.allowed_issues
+          ):
+              raise ValueError("allowed_issues must be a list of non-empty strings.")
+            if not isinstance(self.block_on_issues, bool):
+                raise ValueError("block_on_issues must true or false.")
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "ReleasePolicy":
@@ -113,6 +115,7 @@ class ReleasePolicy:
             max_distribution_shift=payload.get("max_distribution_shift", 0.35),
             confidence_level=payload.get("confidence_level", 0.95),
             allowed_issues=allowed_issues,
+            block_on_issues=payload.get("block_on_issues", False),
         )
 
     def evaluate(self, verification: dict[str, Any] | Any) -> dict[str, Any]:

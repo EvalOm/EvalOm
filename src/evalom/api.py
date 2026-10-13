@@ -577,15 +577,13 @@ def run() -> None:
     allow_remote_access = os.environ.get("EVALOM_ALLOW_REMOTE_ACCESS", "0").strip().lower() in {"1", "true", "yes", "on"}
     certfile = os.environ.get("EVALOM_TLS_CERTFILE")
     keyfile = os.environ.get("EVALOM_TLS_KEYFILE")
-    if app.state.bootstrap_api_key and not _is_loopback_host(host):
-        if not allow_remote_access:
-            raise RuntimeError(
-                "Remote API exposure is blocked by default. Set EVALOM_ALLOW_REMOTE_ACCESS=1 and provide TLS certificate/key files before binding to a non-loopback host."
-            )
-        if not certfile or not keyfile:
-            raise RuntimeError(
-                "Remote API exposure requires both EVALOM_TLS_CERTFILE and EVALOM_TLS_KEYFILE to be set when EVALOM_ALLOW_REMOTE_ACCESS=1."
-            )
+        _validate_runtime_security(
+        bootstrap_api_key=app.state.bootstrap_api_key,
+        host=host,
+        allow_remote_access=allow_remote_access,
+        certfile=certfile,
+        keyfile=keyfile,
+        )
     uvicorn.run(
         "evalom.api:app",
         host=host,

@@ -24,3 +24,15 @@ def test_workspace_creation_cannot_mint_keys_for_existing_workspace(tmp_path: Pa
 
     default = client.post("/api/v1/workspaces", json={"workspace_id": "default"}, headers=attacker_headers)
     assert default.status_code == 409
+
+def test_api_refuses_remote_binding_without_authentication(monkeypatch):
+    monkeypatch.setenv("EVALOM_HOST", "0.0.0.0")
+    monkeypatch.delenv("EVALOM_ADMIN_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="without authentication"):
+        create_app()
+
+
+def test_api_allows_loopback_without_authentication(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("EVALOM_HOST", "127.0.0.1")
+    monkeypatch.delenv("EVALOM_ADMIN_API_KEY", raising=False)
+    assert create_app(database_path=tmp_path / "t.db") is not None

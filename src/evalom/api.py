@@ -203,6 +203,8 @@ def create_app(
     ) -> dict[str, Any]:
         require_admin(identity)
         store = get_store(request)
+        if store.workspace_exists(payload.workspace_id):
+            raise HTTPException(status_code=409, detail="Workspace already exists")
         try:
             admin_key = store.create_api_key(
                 workspace_id=payload.workspace_id,

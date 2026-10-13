@@ -1,7 +1,7 @@
 # EvalOm
 
 EvalOm is an open-source evaluation platform for LLM and RAG applications.
-
+still in developement
 This repository is intentionally being built in small, business-relevant sections. The first slice focuses on the product foundation:
 
 - evaluation dataset model

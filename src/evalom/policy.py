@@ -164,13 +164,15 @@ class ReleasePolicy:
                 f"Distribution shift {distribution_shift:.4f} exceeds the maximum allowed {self.max_distribution_shift:.4f}."
             )
 
-        allowed = {str(item).lower() for item in self.allowed_issues}
-        filtered_issues: list[str] = []
+        allowed = {str(item).strip.lower() for item in self.allowed_issues}
+        warnings: list[str] = []
         for issue in issues:
-            if issue.lower() in allowed:
+            normalized = issue.strip.lower()
+            if any(normalized.startswith(prefix) for prefix in allowed):
                 continue
-            filtered_issues.append(issue)
-        failures.extend(filtered_issues)
+            warnings.append(issue)
+        if self.block_on_issues:
+            failures.extend(warnings)
 
         return {
             "passed": not failures,

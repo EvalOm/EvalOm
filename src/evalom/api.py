@@ -88,10 +88,12 @@ def _validate_runtime_security(
     certfile: str | None,
     keyfile: str | None,
 ) -> None:
+        if _is_loopback_host(host):
+        return
     if not bootstrap_api_key:
-        return
-    if _is_loopback_host(host):
-        return
+        raise ValueError(
+            "Refusing to bind to a non-loopback host without authentication. Set EVALOM_ADMIN_API_KEY (at least 32 characters) or use EVALOM_HOST=127.0.0.1."
+        )
     if not allow_remote_access:
         raise ValueError(
             "Remote API exposure is blocked by default. Set EVALOM_ALLOW_REMOTE_ACCESS=1 and provide TLS certificate/key files before binding to a non-loopback host."

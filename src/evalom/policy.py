@@ -189,6 +189,7 @@ class ReleasePolicy:
             "duplicate_ratio": duplicate_ratio,
             "distribution_shift": distribution_shift,
             "failures": failures,
+            "warnings": [] if self.block_on_issues else warnings,
             "policy": self.to_dict(),
         }
 
@@ -203,6 +204,7 @@ class ReleasePolicy:
             "max_distribution_shift": float(self.max_distribution_shift),
             "confidence_level": float(self.confidence_level),
             "allowed_issues": list(self.allowed_issues),
+            "blocked_issues": bool(self.block_on_issues),
         }
 
 

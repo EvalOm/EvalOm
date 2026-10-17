@@ -1,0 +1,13 @@
+project:
+  name: rag-test
+
+dataset:
+  path: rag-test.jsonl
+
+evaluators:
+  - name: exact_match
+    type: deterministic
+
+quality_gates:
+  exact_match:
+    minimum: 0.80

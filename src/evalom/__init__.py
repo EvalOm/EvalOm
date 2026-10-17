@@ -1,6 +1,14 @@
 """Public package interface for EvalOm."""
 
 from .adapters import EvaluationImportLayer, LangSmithAdapter, LangfuseAdapter, OpenTelemetryAdapter
+from .agent_assurance import (
+    AgentAssuranceResult,
+    AgentExecution,
+    AgentTaskSpec,
+    ArtifactExpectation,
+    ExecutionEvent,
+    verify_agent_execution,
+)
 from .config import EvaluationConfig, QualityGate
 from .dataset import EvaluationDataset, Sample
 from .evaluators import BaseEvaluator, ContainsEvaluator, ExactMatchEvaluator, MRREvaluator, NDCGEvaluator, NumericToleranceEvaluator, RegexEvaluator, RetrievalRecallEvaluator
@@ -69,6 +77,12 @@ __all__ = [
     "LangfuseAdapter",
     "LangSmithAdapter",
     "OpenTelemetryAdapter",
+    "AgentAssuranceResult",
+    "AgentExecution",
+    "AgentTaskSpec",
+    "ArtifactExpectation",
+    "ExecutionEvent",
+    "verify_agent_execution",
     "DatasetHealth",
     "EvaluationVerificationResult",
     "VerificationEngine",

@@ -121,6 +121,27 @@ The project now supports:
 - sample-size and statistical confidence scoring
 - overall release risk and recommendation reporting
 
+## Agent work assurance
+
+The framework-independent `agent_assurance` module evaluates recorded evidence
+from an agent completing a task without executing the agent, its tools, or
+supplied code. Define an `AgentTaskSpec` with an expected outcome, optional
+artifact checks, an optional tool allowlist, and a retry limit. Then pass an
+`AgentExecution` containing typed `ExecutionEvent` records to
+`verify_agent_execution`.
+
+Artifact checks are independently verified beneath an explicitly supplied
+filesystem root using existence, size, and optional SHA-256 checks. Agent
+success claims are retained as untrusted metadata and never establish success
+by themselves. Results are `verified`, `failed`, or `insufficient_evidence`
+and include passed/failed checks, missing evidence, observed failures, retry
+counts, evidence references, reasons, and limitations.
+
+This first slice is intentionally not a new score, evaluator, persistence
+schema, or release-policy input. It produces a defensible assurance result
+that can be stored or reviewed by existing application layers without changing
+the meaning of statistical evaluation and release policies.
+
 This is the first step toward the broader product vision described in the project specification: a system that sits between existing evaluation infrastructure and production release decisions.
 
 ## Release policy layer

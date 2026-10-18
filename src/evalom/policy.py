@@ -16,6 +16,7 @@ _POLICY_FIELDS = {
     "max_distribution_shift",
     "confidence_level",
     "allowed_issues",
+    "block_on_issues",
 }
 
 
@@ -45,6 +46,7 @@ class ReleasePolicy:
     max_distribution_shift: float = 0.35
     confidence_level: float = 0.95
     allowed_issues: list[str] = field(default_factory=list)
+    block_on_issues: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.max_risk_level, str):
@@ -82,11 +84,13 @@ class ReleasePolicy:
 
         self.confidence_level = _normalize_confidence_level(self.confidence_level)
 
-        if not isinstance(self.allowed_issues, list) or any(
-            not isinstance(issue, str) or not issue.strip()
-            for issue in self.allowed_issues
-        ):
-            raise ValueError("allowed_issues must be a list of non-empty strings.")
+          if not isinstance(self.allowed_issues, list) or any(
+              not isinstance(issue, str) or not issue.strip()
+              for issue in self.allowed_issues
+          ):
+              raise ValueError("allowed_issues must be a list of non-empty strings.")
+            if not isinstance(self.block_on_issues, bool):
+                raise ValueError("block_on_issues must true or false.")
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "ReleasePolicy":
@@ -113,6 +117,7 @@ class ReleasePolicy:
             max_distribution_shift=payload.get("max_distribution_shift", 0.35),
             confidence_level=payload.get("confidence_level", 0.95),
             allowed_issues=allowed_issues,
+            block_on_issues=payload.get("block_on_issues", False),
         )
 
     def evaluate(self, verification: dict[str, Any] | Any) -> dict[str, Any]:
@@ -164,13 +169,15 @@ class ReleasePolicy:
                 f"Distribution shift {distribution_shift:.4f} exceeds the maximum allowed {self.max_distribution_shift:.4f}."
             )
 
-        allowed = {str(item).lower() for item in self.allowed_issues}
-        filtered_issues: list[str] = []
+        allowed = {str(item).strip.lower() for item in self.allowed_issues}
+        warnings: list[str] = []
         for issue in issues:
-            if issue.lower() in allowed:
+            normalized = issue.strip.lower()
+            if any(normalized.startswith(prefix) for prefix in allowed):
                 continue
-            filtered_issues.append(issue)
-        failures.extend(filtered_issues)
+            warnings.append(issue)
+        if self.block_on_issues:
+            failures.extend(warnings)
 
         return {
             "passed": not failures,
@@ -187,6 +194,7 @@ class ReleasePolicy:
             "duplicate_ratio": duplicate_ratio,
             "distribution_shift": distribution_shift,
             "failures": failures,
+            "warnings": [] if self.block_on_issues else warnings,
             "policy": self.to_dict(),
         }
 
@@ -201,6 +209,7 @@ class ReleasePolicy:
             "max_distribution_shift": float(self.max_distribution_shift),
             "confidence_level": float(self.confidence_level),
             "allowed_issues": list(self.allowed_issues),
+            "blocked_issues": bool(self.block_on_issues),
         }
 
 

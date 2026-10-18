@@ -289,6 +289,13 @@ class SQLiteExperimentStore:
             "created_at": created_at,
             "api_key": token,
         }
+            def workspace_exists(self, workspace_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM workspaces WHERE id = ?",
+                (workspace_id,),
+            ).fetchone()
+        return row is not None
 
     def authenticate_api_key(self, api_key: str) -> dict[str, str] | None:
         key_hash = self._hash_api_key(api_key)
@@ -1006,6 +1013,11 @@ class PostgresExperimentStore(SQLiteExperimentStore):
             "created_at": created_at,
             "api_key": token,
         }
+            def workspace_exists(self, workspace_id: str) -> bool:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM workspaces WHERE id = %s", (workspace_id,))
+                return cursor.fetchone() is not None
 
     def authenticate_api_key(self, api_key: str) -> dict[str, str] | None:
         key_hash = self._hash_api_key(api_key)

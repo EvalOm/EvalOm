@@ -28,6 +28,14 @@ The Python package remains the evaluation engine. The CLI and API are separate a
 - `reports.py` remains responsible for report rendering.
 - `cli.py` remains useful for local and CI execution; it should call shared domain/storage interfaces rather than embed server behavior.
 
+Assurance results use `verified`, `failed`, and `insufficient_evidence` as
+distinct assurance statuses. Individual agent checks retain the legacy
+boolean `passed` field and also expose `passed`, `failed`, `not_run`, or
+`indeterminate` in their `status` field. A release policy decision is a
+separate `ALLOW` or `BLOCK` value; any assurance result whose status is not
+`verified` is blocked, regardless of aggregate scores. Artifact hashes
+establish integrity only and do not establish artifact correctness.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

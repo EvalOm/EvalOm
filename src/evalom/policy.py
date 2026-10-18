@@ -84,13 +84,13 @@ class ReleasePolicy:
 
         self.confidence_level = _normalize_confidence_level(self.confidence_level)
 
-          if not isinstance(self.allowed_issues, list) or any(
-              not isinstance(issue, str) or not issue.strip()
-              for issue in self.allowed_issues
-          ):
-              raise ValueError("allowed_issues must be a list of non-empty strings.")
-            if not isinstance(self.block_on_issues, bool):
-                raise ValueError("block_on_issues must true or false.")
+        if not isinstance(self.allowed_issues, list) or any(
+            not isinstance(issue, str) or not issue.strip()
+            for issue in self.allowed_issues
+        ):
+            raise ValueError("allowed_issues must be a list of non-empty strings.")
+        if not isinstance(self.block_on_issues, bool):
+            raise ValueError("block_on_issues must true or false.")
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "ReleasePolicy":
@@ -140,6 +140,11 @@ class ReleasePolicy:
         issues = [str(issue) for issue in summary.get("issues", [])]
 
         failures: list[str] = []
+        assurance_status = summary.get("status")
+        if assurance_status is not None and assurance_status != "verified":
+            failures.append(
+                f"Assurance status {assurance_status!r} is not verified; release is blocked."
+            )
         if risk_level not in _RISK_ORDER:
             failures.append(f"Unknown verification risk level {risk_level!r}; release is blocked.")
         if _RISK_ORDER.get(risk_level, 2) > _RISK_ORDER.get(self.max_risk_level.upper(), 2):
@@ -169,10 +174,10 @@ class ReleasePolicy:
                 f"Distribution shift {distribution_shift:.4f} exceeds the maximum allowed {self.max_distribution_shift:.4f}."
             )
 
-        allowed = {str(item).strip.lower() for item in self.allowed_issues}
+        allowed = {str(item).strip().lower() for item in self.allowed_issues}
         warnings: list[str] = []
         for issue in issues:
-            normalized = issue.strip.lower()
+            normalized = issue.strip().lower()
             if any(normalized.startswith(prefix) for prefix in allowed):
                 continue
             warnings.append(issue)
@@ -209,7 +214,7 @@ class ReleasePolicy:
             "max_distribution_shift": float(self.max_distribution_shift),
             "confidence_level": float(self.confidence_level),
             "allowed_issues": list(self.allowed_issues),
-            "blocked_issues": bool(self.block_on_issues),
+            "block_on_issues": bool(self.block_on_issues),
         }
 
 

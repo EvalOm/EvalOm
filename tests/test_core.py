@@ -532,6 +532,22 @@ def test_release_policy_allows_safe_verification():
     assert decision["decision"] == "ALLOW"
 
 
+def test_release_policy_blocks_unverified_assurance():
+    decision = ReleasePolicy(max_risk_level="HIGH").evaluate({
+        "status": "insufficient_evidence",
+        "risk_level": "LOW",
+        "confidence_score": 100,
+        "dataset_quality": 1,
+        "evaluator_reliability": 1,
+        "statistical_confidence": 1,
+        "issues": [],
+        "dataset_health": {"duplicate_ratio": 0, "distribution_shift": 0},
+    })
+
+    assert decision["decision"] == "BLOCK"
+    assert any("not verified" in failure for failure in decision["failures"])
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -88,7 +88,7 @@ def _validate_runtime_security(
     certfile: str | None,
     keyfile: str | None,
 ) -> None:
-        if _is_loopback_host(host):
+    if _is_loopback_host(host):
         return
     if not bootstrap_api_key:
         raise ValueError(
@@ -579,13 +579,13 @@ def run() -> None:
     allow_remote_access = os.environ.get("EVALOM_ALLOW_REMOTE_ACCESS", "0").strip().lower() in {"1", "true", "yes", "on"}
     certfile = os.environ.get("EVALOM_TLS_CERTFILE")
     keyfile = os.environ.get("EVALOM_TLS_KEYFILE")
-        _validate_runtime_security(
+    _validate_runtime_security(
         bootstrap_api_key=app.state.bootstrap_api_key,
         host=host,
         allow_remote_access=allow_remote_access,
         certfile=certfile,
         keyfile=keyfile,
-        )
+    )
     uvicorn.run(
         "evalom.api:app",
         host=host,

@@ -49,6 +49,7 @@ def test_success_claim_without_verification_is_insufficient():
     )
     assert result.status == "insufficient_evidence"
     assert "independent outcome evidence" in result.missing_evidence
+    assert next(check for check in result.checks if check["name"] == "artifacts")["status"] == "indeterminate"
 
 
 def test_missing_expected_artifact_is_failed(tmp_path: Path):
@@ -107,6 +108,18 @@ def test_empty_trace_is_insufficient(tmp_path: Path):
     result = verify_agent_execution(_task(), AgentExecution("task-1"), artifact_root=tmp_path)
     assert result.status == "insufficient_evidence"
     assert "execution events" in result.missing_evidence
+    assert next(check for check in result.checks if check["name"] == "execution_events")["status"] == "not_run"
+
+
+def test_failed_check_status_is_distinct_from_not_run(tmp_path: Path):
+    result = verify_agent_execution(
+        _task(),
+        _execution(ExecutionEvent("1", "failure", metadata={"reason": "write failed"})),
+        artifact_root=tmp_path,
+    )
+    statuses = {check["name"]: check["status"] for check in result.checks}
+    assert statuses["execution_failures"] == "failed"
+    assert statuses["completion_event"] == "not_run"
 
 
 def test_malformed_input_and_invalid_event_types_are_rejected():

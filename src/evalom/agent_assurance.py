@@ -18,6 +18,7 @@ MAX_METADATA_KEYS = 50
 MAX_METADATA_BYTES = 16_384
 MAX_EVENTS = 10_000
 MAX_ARTIFACTS = 100
+CHECK_STATUSES = frozenset({"passed", "failed", "not_run", "indeterminate"})
 
 
 def _bounded_string(value: Any, name: str, maximum: int, *, required: bool = True) -> str:
@@ -239,6 +240,10 @@ class AgentAssuranceResult:
     def __post_init__(self) -> None:
         if self.status not in {"verified", AssessmentStatus.FAILED, "insufficient_evidence"}:
             raise ValueError(f"Unsupported assurance status: {self.status!r}.")
+        for check in self.checks:
+            check_status = check.get("status")
+            if check_status is not None and check_status not in CHECK_STATUSES:
+                raise ValueError(f"Unsupported assurance check status: {check_status!r}.")
 
     @property
     def verified(self) -> bool:
@@ -306,8 +311,19 @@ def verify_agent_execution(
         missing.append("execution events")
 
     retries = sum(event.event_type == "retry" for event in trace.events)
-    checks.append({"name": "execution_events", "passed": bool(trace.events), "reason": "Events were recorded." if trace.events else "No execution events were provided."})
-    checks.append({"name": "retry_limit", "passed": retries <= task_spec.max_retries, "observed": retries, "allowed": task_spec.max_retries})
+    checks.append({
+        "name": "execution_events",
+        "passed": bool(trace.events),
+        "status": "passed" if trace.events else "not_run",
+        "reason": "Events were recorded." if trace.events else "No execution events were provided.",
+    })
+    checks.append({
+        "name": "retry_limit",
+        "passed": retries <= task_spec.max_retries,
+        "status": "passed" if retries <= task_spec.max_retries else "failed",
+        "observed": retries,
+        "allowed": task_spec.max_retries,
+    })
     if retries > task_spec.max_retries:
         failures.append(f"retry limit exceeded: observed {retries}, allowed {task_spec.max_retries}")
 
@@ -316,23 +332,43 @@ def verify_agent_execution(
         for event in trace.events
         if event.event_type == "failure"
     )
-    checks.append({"name": "execution_failures", "passed": not observed_failures, "observed": list(observed_failures)})
+    checks.append({
+        "name": "execution_failures",
+        "passed": not observed_failures,
+        "status": "failed" if observed_failures else "passed",
+        "observed": list(observed_failures),
+    })
     failures.extend(f"execution failure observed: {reason}" for reason in observed_failures)
 
     tools = [event.tool_name for event in trace.events if event.event_type == "tool_invocation" and event.tool_name]
     forbidden = sorted({tool for tool in tools if task_spec.allowed_tools is not None and tool not in task_spec.allowed_tools})
-    checks.append({"name": "tool_allowlist", "passed": not forbidden, "forbidden": forbidden})
+    checks.append({
+        "name": "tool_allowlist",
+        "passed": not forbidden,
+        "status": "failed" if forbidden else "passed",
+        "forbidden": forbidden,
+    })
     failures.extend(f"forbidden tool invocation: {tool}" for tool in forbidden)
 
     completions = [event for event in trace.events if event.event_type == "completion"]
-    checks.append({"name": "completion_event", "passed": bool(completions), "observed": len(completions)})
+    checks.append({
+        "name": "completion_event",
+        "passed": bool(completions),
+        "status": "passed" if completions else "not_run",
+        "observed": len(completions),
+    })
     if not completions:
         missing.append("completion event")
 
     if task_spec.expected_artifacts:
         if artifact_root is None:
             missing.append("artifact root for expected artifact verification")
-            checks.append({"name": "artifacts", "passed": False, "reason": "No artifact root was provided."})
+            checks.append({
+                "name": "artifacts",
+                "passed": False,
+                "status": "not_run",
+                "reason": "No artifact root was provided.",
+            })
         else:
             root = Path(artifact_root).resolve()
             artifact_results = []
@@ -341,10 +377,21 @@ def verify_agent_execution(
                 artifact_results.append({"path": expectation.path, "passed": passed, "reason": reason})
                 if not passed:
                     failures.append(reason)
-            checks.append({"name": "artifacts", "passed": not any(not item["passed"] for item in artifact_results), "items": artifact_results})
+            artifacts_passed = not any(not item["passed"] for item in artifact_results)
+            checks.append({
+                "name": "artifacts",
+                "passed": artifacts_passed,
+                "status": "passed" if artifacts_passed else "failed",
+                "items": artifact_results,
+            })
     else:
         missing.append("independent outcome evidence")
-        checks.append({"name": "artifacts", "passed": False, "reason": "No expected artifact checks were configured."})
+        checks.append({
+            "name": "artifacts",
+            "passed": False,
+            "status": "indeterminate",
+            "reason": "No expected artifact checks were configured.",
+        })
 
     passed_checks = tuple(check["name"] for check in checks if check.get("passed") is True)
     failed_checks = tuple(check["name"] for check in checks if check.get("passed") is False)

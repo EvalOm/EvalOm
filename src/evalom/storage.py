@@ -289,7 +289,8 @@ class SQLiteExperimentStore:
             "created_at": created_at,
             "api_key": token,
         }
-            def workspace_exists(self, workspace_id: str) -> bool:
+
+    def workspace_exists(self, workspace_id: str) -> bool:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT 1 FROM workspaces WHERE id = ?",
@@ -1013,7 +1014,8 @@ class PostgresExperimentStore(SQLiteExperimentStore):
             "created_at": created_at,
             "api_key": token,
         }
-            def workspace_exists(self, workspace_id: str) -> bool:
+
+    def workspace_exists(self, workspace_id: str) -> bool:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1 FROM workspaces WHERE id = %s", (workspace_id,))

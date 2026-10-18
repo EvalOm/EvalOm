@@ -200,6 +200,29 @@ class SQLiteExperimentStore:
                 "ON audit_events(workspace_id, created_at DESC, id DESC)"
             )
             connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS evidence_records (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    evidence_type TEXT NOT NULL,
+                    task_id TEXT,
+                    execution_id TEXT,
+                    source TEXT,
+                    claimed_digest TEXT,
+                    verified_digest TEXT,
+                    digest_status TEXT NOT NULL,
+                    lifecycle_status TEXT NOT NULL,
+                    supersedes_id TEXT,
+                    created_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_workspace_created "
+                "ON evidence_records(workspace_id, created_at DESC, id DESC)"
+            )
+            connection.execute(
                 "INSERT OR IGNORE INTO workspaces (id, created_at) VALUES (?, ?)",
                 ("default", datetime.now(timezone.utc).isoformat()),
             )
@@ -425,6 +448,62 @@ class SQLiteExperimentStore:
             ],
             "total": total,
         }
+
+    def save_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
+        if any(not payload.get(name) for name in required):
+            raise ValueError("Evidence payload is missing required fields.")
+        record = dict(payload)
+        record["metadata"] = _normalize_json_value(record.get("metadata") or {})
+        with self._connect() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO evidence_records (
+                        id, workspace_id, evidence_type, task_id, execution_id, source,
+                        claimed_digest, verified_digest, digest_status, lifecycle_status,
+                        supersedes_id, created_at, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["evidence_id"], record["workspace_id"], record["evidence_type"],
+                        record.get("task_id"), record.get("execution_id"), record.get("source"),
+                        record.get("claimed_digest"), record.get("verified_digest"),
+                        record["digest_status"], record["lifecycle_status"], record.get("supersedes_id"),
+                        record["created_at"], json.dumps(record["metadata"], sort_keys=True),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Evidence identifier already exists.") from exc
+        return record
+
+    def get_evidence(self, evidence_id: str, *, workspace_id: str = "default") -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM evidence_records WHERE id = ? AND workspace_id = ?",
+                (evidence_id, workspace_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._evidence_row(row)
+
+    @staticmethod
+    def _evidence_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["evidence_id"] = record.pop("id")
+        record["metadata"] = json.loads(record.pop("metadata_json"))
+        return record
+
+    def mark_evidence_superseded(self, evidence_id: str, *, workspace_id: str = "default") -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE evidence_records SET lifecycle_status = 'superseded'
+                WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'active'
+                """,
+                (evidence_id, workspace_id),
+            )
+        return cursor.rowcount > 0
 
     def create(
         self,
@@ -956,6 +1035,28 @@ class PostgresExperimentStore(SQLiteExperimentStore):
                     "CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_created ON audit_events(workspace_id, created_at DESC, id DESC)"
                 )
                 cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS evidence_records (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT NOT NULL,
+                        evidence_type TEXT NOT NULL,
+                        task_id TEXT,
+                        execution_id TEXT,
+                        source TEXT,
+                        claimed_digest TEXT,
+                        verified_digest TEXT,
+                        digest_status TEXT NOT NULL,
+                        lifecycle_status TEXT NOT NULL,
+                        supersedes_id TEXT,
+                        created_at TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_evidence_workspace_created ON evidence_records(workspace_id, created_at DESC, id DESC)"
+                )
+                cursor.execute(
                     "INSERT INTO workspaces (id, created_at) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
                     ("default", datetime.now(timezone.utc).isoformat()),
                 )
@@ -1416,6 +1517,67 @@ class PostgresExperimentStore(SQLiteExperimentStore):
                 )
                 rows = cursor.fetchall()
         return {"items": [self._to_verification_record(row) for row in rows], "total": total}
+
+    def save_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
+        if any(not payload.get(name) for name in required):
+            raise ValueError("Evidence payload is missing required fields.")
+        record = dict(payload)
+        record["metadata"] = _normalize_json_value(record.get("metadata") or {})
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO evidence_records (
+                        id, workspace_id, evidence_type, task_id, execution_id, source,
+                        claimed_digest, verified_digest, digest_status, lifecycle_status,
+                        supersedes_id, created_at, metadata_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record["evidence_id"], record["workspace_id"], record["evidence_type"],
+                        record.get("task_id"), record.get("execution_id"), record.get("source"),
+                        record.get("claimed_digest"), record.get("verified_digest"),
+                        record["digest_status"], record["lifecycle_status"], record.get("supersedes_id"),
+                        record["created_at"], json.dumps(record["metadata"], sort_keys=True),
+                    ),
+                )
+        return record
+
+    def get_evidence(self, evidence_id: str, *, workspace_id: str = "default") -> dict[str, Any] | None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, workspace_id, evidence_type, task_id, execution_id, source, claimed_digest, verified_digest, digest_status, lifecycle_status, supersedes_id, created_at, metadata_json FROM evidence_records WHERE id = %s AND workspace_id = %s",
+                    (evidence_id, workspace_id),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._to_evidence_record(row)
+
+    @staticmethod
+    def _to_evidence_record(row: Any) -> dict[str, Any]:
+        names = (
+            "evidence_id", "workspace_id", "evidence_type", "task_id", "execution_id", "source",
+            "claimed_digest", "verified_digest", "digest_status", "lifecycle_status",
+            "supersedes_id", "created_at", "metadata_json",
+        )
+        record = dict(zip(names, row))
+        record["metadata"] = json.loads(record.pop("metadata_json"))
+        return record
+
+    def mark_evidence_superseded(self, evidence_id: str, *, workspace_id: str = "default") -> bool:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE evidence_records SET lifecycle_status = 'superseded'
+                    WHERE id = %s AND workspace_id = %s AND lifecycle_status = 'active'
+                    """,
+                    (evidence_id, workspace_id),
+                )
+                return cursor.rowcount > 0
 
     def check_ready(self) -> bool:
         with self._connect() as connection:

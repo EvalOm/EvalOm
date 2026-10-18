@@ -36,6 +36,15 @@ separate `ALLOW` or `BLOCK` value; any assurance result whose status is not
 `verified` is blocked, regardless of aggregate scores. Artifact hashes
 establish integrity only and do not establish artifact correctness.
 
+The local evidence registry stores typed, workspace-scoped evidence metadata
+in the existing SQLite or PostgreSQL store. File evidence must be relative to
+an explicitly supplied artifact root; paths are resolved before access, files
+are streamed for SHA-256 calculation, symlink escapes are rejected, and a
+configurable size limit is enforced. Claimed and verified digests remain
+separate, with `verified`, `mismatch`, and `unavailable` states. Replacing
+evidence creates a new record and marks the prior record `superseded`;
+registration and supersession use the existing audit-event model.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

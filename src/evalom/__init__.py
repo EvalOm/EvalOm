@@ -13,6 +13,12 @@ from .config import EvaluationConfig, QualityGate
 from .dataset import EvaluationDataset, Sample
 from .evaluators import BaseEvaluator, ContainsEvaluator, ExactMatchEvaluator, MRREvaluator, NDCGEvaluator, NumericToleranceEvaluator, RegexEvaluator, RetrievalRecallEvaluator
 from .experiment import ExperimentRecord, ExperimentTracker
+from .evidence import (
+    EvidenceRecord,
+    EvidenceRegistry,
+    register_file_evidence,
+    register_reference_evidence,
+)
 from .policy import ReleasePolicy, evaluate_verification_policy
 from .reports import generate_html_report, generate_json_report
 from .riav import (
@@ -57,6 +63,10 @@ __all__ = [
     "QualityGate",
     "ExperimentRecord",
     "ExperimentTracker",
+    "EvidenceRecord",
+    "EvidenceRegistry",
+    "register_file_evidence",
+    "register_reference_evidence",
     "ReleasePolicy",
     "evaluate_verification_policy",
     "AssessmentStatus",

@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from evalom.api import create_app
+from evalom.evidence import EvidenceRegistry, register_reference_evidence
+from evalom.storage import create_experiment_store
 
 
 @pytest.mark.skipif(
@@ -96,3 +98,29 @@ def test_postgres_api_storage_smoke():
         f"/api/v1/experiments/{created.json()['id']}",
         headers=bootstrap_headers,
     ).status_code == 404
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_evidence_supersession_transaction():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://postgres-1", workspace_id="pg-evidence"
+    ))
+    replacement = register_reference_evidence(
+        evidence_type="human_review",
+        source="review://postgres-2",
+        workspace_id="pg-evidence",
+        evidence_id="postgres-replacement",
+    )
+    replacement = replacement.__class__(
+        **{**replacement.to_dict(), "supersedes_id": original["evidence_id"]}
+    )
+    registry.supersede(original["evidence_id"], replacement)
+
+    assert registry.get(original["evidence_id"], workspace_id="pg-evidence")["lifecycle_status"] == "superseded"
+    assert registry.get("postgres-replacement", workspace_id="pg-evidence") is not None

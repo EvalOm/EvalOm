@@ -44,6 +44,11 @@ configurable size limit is enforced. Claimed and verified digests remain
 separate, with `verified`, `mismatch`, and `unavailable` states. Replacing
 evidence creates a new record and marks the prior record `superseded`;
 registration and supersession use the existing audit-event model.
+Only the in-process file-ingestion factory may create `verified` or `mismatch`
+records; deserializing caller-controlled dictionaries cannot establish those
+states. This is an application trust boundary, not a Python security sandbox:
+trusted in-process code can still bypass conventions, so persisted evidence
+must be treated according to its recorded provenance and validation history.
 
 ## API contract
 

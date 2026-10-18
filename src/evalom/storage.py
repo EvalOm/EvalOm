@@ -454,6 +454,9 @@ class SQLiteExperimentStore:
         if any(not payload.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(payload)
+        trusted_digest = record.pop("_trusted_digest", False)
+        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+            raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         with self._connect() as connection:
             try:
@@ -504,6 +507,77 @@ class SQLiteExperimentStore:
                 (evidence_id, workspace_id),
             )
         return cursor.rowcount > 0
+
+    def supersede_evidence_and_audit(
+        self,
+        evidence_id: str,
+        replacement: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
+        if any(not replacement.get(name) for name in required):
+            raise ValueError("Evidence payload is missing required fields.")
+        record = dict(replacement)
+        trusted_digest = record.pop("_trusted_digest", False)
+        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+            raise ValueError("Trusted digest status requires byte verification.")
+        record["metadata"] = _normalize_json_value(record.get("metadata") or {})
+        if record["supersedes_id"] != evidence_id:
+            raise ValueError("Replacement evidence association is invalid.")
+        with self._connect() as connection:
+            old = connection.execute(
+                "SELECT id FROM evidence_records WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'active'",
+                (evidence_id, record["workspace_id"]),
+            ).fetchone()
+            if old is None:
+                raise ValueError("Active evidence to supersede was not found in the workspace.")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO evidence_records (
+                        id, workspace_id, evidence_type, task_id, execution_id, source,
+                        claimed_digest, verified_digest, digest_status, lifecycle_status,
+                        supersedes_id, created_at, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["evidence_id"], record["workspace_id"], record["evidence_type"],
+                        record.get("task_id"), record.get("execution_id"), record.get("source"),
+                        record.get("claimed_digest"), record.get("verified_digest"),
+                        record["digest_status"], record["lifecycle_status"], record.get("supersedes_id"),
+                        record["created_at"], json.dumps(record["metadata"], sort_keys=True),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Replacement evidence could not be inserted.") from exc
+            updated = connection.execute(
+                """
+                UPDATE evidence_records SET lifecycle_status = 'superseded'
+                WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'active'
+                """,
+                (evidence_id, record["workspace_id"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Evidence was superseded concurrently.")
+            now = datetime.now(timezone.utc).isoformat()
+            for event_type, details in (
+                ("evidence.registered", {"evidence_id": record["evidence_id"], "evidence_type": record["evidence_type"]}),
+                ("evidence.superseded", {"evidence_id": evidence_id, "replacement_id": record["evidence_id"]}),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO audit_events (
+                        id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()), record["workspace_id"], actor_id, actor_name, event_type,
+                        json.dumps(details, sort_keys=True), now,
+                    ),
+                )
+        return record
 
     def create(
         self,
@@ -1523,6 +1597,9 @@ class PostgresExperimentStore(SQLiteExperimentStore):
         if any(not payload.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(payload)
+        trusted_digest = record.pop("_trusted_digest", False)
+        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+            raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -1578,6 +1655,75 @@ class PostgresExperimentStore(SQLiteExperimentStore):
                     (evidence_id, workspace_id),
                 )
                 return cursor.rowcount > 0
+
+    def supersede_evidence_and_audit(
+        self,
+        evidence_id: str,
+        replacement: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
+        if any(not replacement.get(name) for name in required):
+            raise ValueError("Evidence payload is missing required fields.")
+        record = dict(replacement)
+        trusted_digest = record.pop("_trusted_digest", False)
+        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+            raise ValueError("Trusted digest status requires byte verification.")
+        record["metadata"] = _normalize_json_value(record.get("metadata") or {})
+        if record["supersedes_id"] != evidence_id:
+            raise ValueError("Replacement evidence association is invalid.")
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM evidence_records WHERE id = %s AND workspace_id = %s AND lifecycle_status = 'active' FOR UPDATE",
+                    (evidence_id, record["workspace_id"]),
+                )
+                if cursor.fetchone() is None:
+                    raise ValueError("Active evidence to supersede was not found in the workspace.")
+                cursor.execute(
+                    """
+                    INSERT INTO evidence_records (
+                        id, workspace_id, evidence_type, task_id, execution_id, source,
+                        claimed_digest, verified_digest, digest_status, lifecycle_status,
+                        supersedes_id, created_at, metadata_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record["evidence_id"], record["workspace_id"], record["evidence_type"],
+                        record.get("task_id"), record.get("execution_id"), record.get("source"),
+                        record.get("claimed_digest"), record.get("verified_digest"),
+                        record["digest_status"], record["lifecycle_status"], record.get("supersedes_id"),
+                        record["created_at"], json.dumps(record["metadata"], sort_keys=True),
+                    ),
+                )
+                cursor.execute(
+                    """
+                    UPDATE evidence_records SET lifecycle_status = 'superseded'
+                    WHERE id = %s AND workspace_id = %s AND lifecycle_status = 'active'
+                    """,
+                    (evidence_id, record["workspace_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Evidence was superseded concurrently.")
+                now = datetime.now(timezone.utc).isoformat()
+                for event_type, details in (
+                    ("evidence.registered", {"evidence_id": record["evidence_id"], "evidence_type": record["evidence_type"]}),
+                    ("evidence.superseded", {"evidence_id": evidence_id, "replacement_id": record["evidence_id"]}),
+                ):
+                    cursor.execute(
+                        """
+                        INSERT INTO audit_events (
+                            id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            str(uuid4()), record["workspace_id"], actor_id, actor_name, event_type,
+                            json.dumps(details, sort_keys=True), now,
+                        ),
+                    )
+        return record
 
     def check_ready(self) -> bool:
         with self._connect() as connection:

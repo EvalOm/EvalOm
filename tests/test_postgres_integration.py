@@ -394,3 +394,117 @@ def test_postgres_evidence_workspace_isolation_for_lifecycle_operations():
     with pytest.raises(ValueError):
         registry.delete(original["evidence_id"], workspace_id=workspace_b)
     assert registry.get(original["evidence_id"], workspace_id=workspace_a)["lifecycle_status"] == "active"
+
+
+def _postgres_report_payload(report_id: str) -> dict:
+    return {
+        "report_id": report_id,
+        "dataset_name": "postgres-report",
+        "dataset_version": "v1",
+        "risk_level": "LOW",
+        "confidence_score": 97.0,
+        "policy_decision": {"decision": "ALLOW"},
+        "verification": {
+            "status": "verified",
+            "checks": [{"name": "completeness", "status": "passed"}],
+            "evidence_references": ["evidence-1"],
+        },
+    }
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_atomic_report_save_round_trip_and_workspace_isolation():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    workspace_id = f"pg-report-{uuid4().hex}"
+    report_id = f"pg-report-{uuid4().hex}"
+
+    report = store.save_verification_report_and_audit(
+        _postgres_report_payload(report_id),
+        workspace_id=workspace_id,
+        actor_id="pg-actor",
+        actor_name="integration",
+    )
+
+    assert store.get_verification_report(report_id, workspace_id=workspace_id) == report
+    assert store.get_verification_report(report_id, workspace_id="other-workspace") is None
+    assert store.list_verification_reports(workspace_id=workspace_id)["total"] == 1
+    assert store.list_verification_reports(workspace_id="other-workspace")["total"] == 0
+    events = store.list_audit_events(workspace_id=workspace_id)["items"]
+    assert any(
+        event["event_type"] == "verification.created"
+        and event["details"]["report_id"] == report_id
+        for event in events
+    )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_atomic_report_audit_failure_rolls_back_and_recovers():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    workspace_id = f"pg-report-rollback-{uuid4().hex}"
+    function_name = f"fail_report_audit_{uuid4().hex}"
+    trigger_name = f"fail_report_audit_trigger_{uuid4().hex}"
+    failed_id = f"pg-failed-report-{uuid4().hex}"
+    recovered_id = f"pg-recovered-report-{uuid4().hex}"
+    try:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    CREATE FUNCTION {function_name}() RETURNS trigger AS $$
+                    BEGIN
+                        IF NEW.event_type = 'verification.created' THEN
+                            RAISE EXCEPTION 'report audit failure';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql
+                """)
+                cursor.execute(
+                    f"CREATE TRIGGER {trigger_name} BEFORE INSERT ON audit_events "
+                    f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                )
+        with pytest.raises(Exception, match="report audit failure"):
+            store.save_verification_report_and_audit(
+                _postgres_report_payload(failed_id), workspace_id=workspace_id
+            )
+    finally:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name} ON audit_events")
+                cursor.execute(f"DROP FUNCTION IF EXISTS {function_name}()")
+
+    assert store.get_verification_report(failed_id, workspace_id=workspace_id) is None
+    assert store.save_verification_report_and_audit(
+        _postgres_report_payload(recovered_id), workspace_id=workspace_id
+    )["id"] == recovered_id
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_atomic_report_duplicate_id_does_not_overwrite_or_audit():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    workspace_id = f"pg-report-duplicate-{uuid4().hex}"
+    report_id = f"pg-duplicate-report-{uuid4().hex}"
+    store.save_verification_report_and_audit(
+        _postgres_report_payload(report_id), workspace_id=workspace_id
+    )
+
+    with pytest.raises(Exception):
+        store.save_verification_report_and_audit(
+            {**_postgres_report_payload(report_id), "dataset_name": "changed"},
+            workspace_id=workspace_id,
+        )
+
+    persisted = store.get_verification_report(report_id, workspace_id=workspace_id)
+    assert persisted["dataset_name"] == "postgres-report"
+    assert store.list_audit_events(workspace_id=workspace_id)["total"] == 1

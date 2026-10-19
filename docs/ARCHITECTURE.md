@@ -74,6 +74,18 @@ not tamper-proof. Digest integrity does not establish correctness or
 authenticity of the original claim. Permanent erasure and automated retention
 policies are not implemented in this work package.
 
+Verification reports are persisted through a dedicated report-plus-audit
+operation used by the verification API. The report row and its required
+`verification.created` audit event are inserted on the same SQLite or
+PostgreSQL transaction; a report or audit insertion failure rolls back both.
+Report IDs are database-constrained, retrieval and listing are
+workspace-scoped, and serialized report summaries preserve historical
+assurance results without rerunning evaluation or recalculating decisions.
+The existing direct report-save method remains available for compatibility
+and does not itself create an audit event; callers requiring the atomic
+guarantee must use the dedicated operation. Evidence registration and its
+audit event likewise remain separate operations.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

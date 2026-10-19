@@ -369,6 +369,113 @@ def test_verification_reports_persist_and_round_trip(tmp_path: Path):
     assert persisted["summary"]["verification"]["recommendation"] == "Review before release."
 
 
+def _report_payload(report_id: str, *, workspace_id: str = "workspace-a") -> dict:
+    return {
+        "report_id": report_id,
+        "workspace_id": workspace_id,
+        "dataset_name": "atomic-dataset",
+        "dataset_version": "v1",
+        "risk_level": "LOW",
+        "confidence_score": 98.5,
+        "policy_decision": {"decision": "ALLOW"},
+        "verification": {
+            "status": "verified",
+            "checks": [{"name": "quality", "status": "passed"}],
+            "evidence": [{"evidence_id": "evidence-1"}],
+        },
+        "statistics": {"sample_size": 10, "uncertainty": 0.02},
+    }
+
+
+def test_atomic_report_save_persists_report_and_audit(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "atomic.db")
+
+    report = store.save_verification_report_and_audit(
+        _report_payload("report-1"),
+        workspace_id="workspace-a",
+        actor_id="actor-1",
+        actor_name="test",
+    )
+
+    persisted = store.get_verification_report("report-1", workspace_id="workspace-a")
+    events = store.list_audit_events(workspace_id="workspace-a")["items"]
+    assert persisted == report
+    assert persisted["summary"]["verification"]["checks"][0]["status"] == "passed"
+    assert persisted["summary"]["statistics"]["uncertainty"] == 0.02
+    assert [event["event_type"] for event in events] == ["verification.created"]
+    assert events[0]["details"]["report_id"] == "report-1"
+
+
+def test_atomic_report_save_rolls_back_on_audit_failure_and_recovers(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "atomic-audit-failure.db")
+    with store._connect() as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_report_audit BEFORE INSERT ON audit_events
+            WHEN NEW.event_type = 'verification.created'
+            BEGIN SELECT RAISE(ABORT, 'report audit failure'); END
+            """
+        )
+
+    with pytest.raises(Exception, match="report audit failure"):
+        store.save_verification_report_and_audit(_report_payload("failed-report"))
+
+    assert store.get_verification_report("failed-report") is None
+    assert store.list_audit_events()["total"] == 0
+    with store._connect() as connection:
+        connection.execute("DROP TRIGGER fail_report_audit")
+    store.save_verification_report_and_audit(_report_payload("recovered-report"))
+    assert store.get_verification_report("recovered-report") is not None
+
+
+def test_atomic_report_save_rolls_back_on_report_failure_without_audit(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "atomic-report-failure.db")
+    store.save_verification_report(_report_payload("existing-report"))
+
+    with pytest.raises(ValueError, match="identifier already exists"):
+        store.save_verification_report_and_audit(_report_payload("existing-report"))
+
+    assert store.get_verification_report("existing-report")["summary"]["dataset_name"] == "atomic-dataset"
+    assert store.list_audit_events()["total"] == 0
+
+
+def test_atomic_report_save_is_workspace_scoped_and_duplicate_safe(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "atomic-workspace.db")
+    store.save_verification_report_and_audit(_report_payload("shared-id", workspace_id="workspace-a"), workspace_id="workspace-a")
+
+    assert store.get_verification_report("shared-id", workspace_id="workspace-b") is None
+    assert store.list_verification_reports(workspace_id="workspace-b")["total"] == 0
+    with pytest.raises(ValueError):
+        store.save_verification_report_and_audit(
+            {**_report_payload("shared-id"), "dataset_name": "replacement"},
+            workspace_id="workspace-a",
+        )
+    assert store.get_verification_report("shared-id", workspace_id="workspace-a")["dataset_name"] == "atomic-dataset"
+    assert store.list_audit_events(workspace_id="workspace-a")["total"] == 1
+
+
+def test_concurrent_atomic_report_creation_allows_only_one_duplicate(tmp_path: Path):
+    database_path = tmp_path / "atomic-concurrent.db"
+    SQLiteExperimentStore(database_path)
+
+    def create_report() -> str:
+        store = SQLiteExperimentStore(database_path)
+        try:
+            store.save_verification_report_and_audit(_report_payload("concurrent-id"))
+        except Exception:
+            return "failed"
+        return "succeeded"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: create_report(), range(2)))
+
+    assert outcomes.count("succeeded") == 1
+    assert outcomes.count("failed") == 1
+    store = SQLiteExperimentStore(database_path)
+    assert store.get_verification_report("concurrent-id") is not None
+    assert store.list_audit_events()["total"] == 1
+
+
 def test_store_migrates_existing_verification_reports(tmp_path: Path):
     database_path = tmp_path / "legacy.db"
     with sqlite3.connect(database_path) as connection:
@@ -438,6 +545,13 @@ def test_verification_api_persists_reports(tmp_path: Path):
     assert fetched.json()["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
     assert fetched.json()["experiment_id"] == experiment_id
     assert fetched.json()["summary"]["policy_decision"] == payload["policy_decision"]
+    audit_events = client.get("/api/v1/audit-events")
+    assert audit_events.status_code == 200
+    assert any(
+        event["event_type"] == "verification.created"
+        and event["details"]["report_id"] == payload["report_id"]
+        for event in audit_events.json()["items"]
+    )
 
     linked_reports = client.get(
         "/api/v1/verification",

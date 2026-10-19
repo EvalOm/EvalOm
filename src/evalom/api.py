@@ -531,7 +531,7 @@ def create_app(
             except (TypeError, ValueError) as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 
-        report = store.save_verification_report(
+        report = store.save_verification_report_and_audit(
             {
                 "dataset_name": payload.dataset_name,
                 "dataset_version": payload.dataset_version,
@@ -544,19 +544,8 @@ def create_app(
             },
             experiment_id=payload.experiment_id,
             workspace_id=identity["workspace_id"],
-        )
-        store.log_audit_event(
-            event_type="verification.created",
-            workspace_id=identity["workspace_id"],
             actor_id=identity["id"],
             actor_name=identity["name"],
-            details={
-                "report_id": report["id"],
-                "experiment_id": payload.experiment_id,
-                "dataset_name": payload.dataset_name,
-                "risk_level": verification.risk_level,
-                "decision": policy_decision["decision"] if policy_decision else None,
-            },
         )
 
         return {

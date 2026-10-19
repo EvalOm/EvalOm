@@ -879,10 +879,50 @@ class SQLiteExperimentStore:
         experiment_id: str | None = None,
         workspace_id: str = "default",
     ) -> dict[str, Any]:
+        record = self._prepare_verification_report(payload, experiment_id=experiment_id, workspace_id=workspace_id)
+
+        with self._connect() as connection:
+            self._insert_verification_report_sqlite(connection, record)
+        return record
+
+    def save_verification_report_and_audit(
+        self,
+        payload: dict[str, Any],
+        *,
+        experiment_id: str | None = None,
+        workspace_id: str = "default",
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        record = self._prepare_verification_report(payload, experiment_id=experiment_id, workspace_id=workspace_id)
+        details = self._verification_audit_details(record)
+        with self._connect() as connection:
+            try:
+                self._insert_verification_report_sqlite(connection, record)
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Verification report identifier already exists.") from exc
+            connection.execute(
+                """
+                INSERT INTO audit_events (
+                    id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()), workspace_id, actor_id, actor_name, "verification.created",
+                    json.dumps(details, sort_keys=True), record["created_at"],
+                ),
+            )
+        return record
+
+    @staticmethod
+    def _prepare_verification_report(
+        payload: dict[str, Any],
+        *,
+        experiment_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise TypeError("Verification payload must be a dictionary.")
-
-        dt = datetime.now(timezone.utc).isoformat()
         verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else payload
         dataset_name = str(payload.get("dataset_name") or verification.get("dataset_name") or "unknown")
         dataset_version = str(payload.get("dataset_version") or verification.get("dataset_version") or "unknown")
@@ -896,9 +936,11 @@ class SQLiteExperimentStore:
         )
         if policy_decision not in {None, "ALLOW", "BLOCK"}:
             raise ValueError("policy_decision must be ALLOW or BLOCK.")
-        summary = _normalize_json_value(payload)
-        record = {
-            "id": str(uuid4()),
+        report_id = payload.get("report_id") or payload.get("id") or str(uuid4())
+        if not isinstance(report_id, str) or not report_id.strip():
+            raise ValueError("report_id must be a non-empty string.")
+        return {
+            "id": report_id,
             "workspace_id": workspace_id,
             "experiment_id": experiment_id or payload.get("experiment_id"),
             "dataset_name": dataset_name,
@@ -906,32 +948,36 @@ class SQLiteExperimentStore:
             "risk_level": risk_level,
             "confidence_score": confidence_score,
             "policy_decision": policy_decision,
-            "created_at": dt,
-            "summary": summary,
+            "created_at": payload.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            "summary": _normalize_json_value(payload),
         }
 
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO verification_reports (
-                    id, workspace_id, experiment_id, dataset_name, dataset_version,
-                    risk_level, confidence_score, policy_decision, created_at, summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record["id"],
-                    record["workspace_id"],
-                    record["experiment_id"],
-                    record["dataset_name"],
-                    record["dataset_version"],
-                    record["risk_level"],
-                    record["confidence_score"],
-                    record["policy_decision"],
-                    record["created_at"],
-                    json.dumps(record["summary"], sort_keys=True, default=str),
-                ),
-            )
-        return record
+    @staticmethod
+    def _verification_audit_details(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "report_id": record["id"],
+            "experiment_id": record["experiment_id"],
+            "dataset_name": record["dataset_name"],
+            "risk_level": record["risk_level"],
+            "decision": record["policy_decision"],
+        }
+
+    @staticmethod
+    def _insert_verification_report_sqlite(connection: sqlite3.Connection, record: dict[str, Any]) -> None:
+        connection.execute(
+            """
+            INSERT INTO verification_reports (
+                id, workspace_id, experiment_id, dataset_name, dataset_version,
+                risk_level, confidence_score, policy_decision, created_at, summary_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["id"], record["workspace_id"], record["experiment_id"],
+                record["dataset_name"], record["dataset_version"], record["risk_level"],
+                record["confidence_score"], record["policy_decision"], record["created_at"],
+                json.dumps(record["summary"], sort_keys=True, default=str),
+            ),
+        )
 
     def get_verification_report(
         self,
@@ -1561,49 +1607,55 @@ class PostgresExperimentStore(SQLiteExperimentStore):
         return {"items": [self._to_record(row) for row in rows], "total": total}
 
     def save_verification_report(self, payload: dict[str, Any], *, experiment_id: str | None = None, workspace_id: str = "default") -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise TypeError("Verification payload must be a dictionary.")
-        dt = datetime.now(timezone.utc).isoformat()
-        verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else payload
-        dataset_name = str(payload.get("dataset_name") or verification.get("dataset_name") or "unknown")
-        dataset_version = str(payload.get("dataset_version") or verification.get("dataset_version") or "unknown")
-        risk_level = str(payload.get("risk_level") or verification.get("risk_level") or "UNKNOWN").upper()
-        confidence_score = float(payload.get("confidence_score") or verification.get("confidence_score") or 0.0)
-        policy = payload.get("policy_decision")
-        policy_decision = (
-            str(policy.get("decision")).upper()
-            if isinstance(policy, dict) and policy.get("decision") is not None
-            else None
-        )
-        if policy_decision not in {None, "ALLOW", "BLOCK"}:
-            raise ValueError("policy_decision must be ALLOW or BLOCK.")
-        summary = _normalize_json_value(payload)
-        record = {
-            "id": str(uuid4()),
-            "workspace_id": workspace_id,
-            "experiment_id": experiment_id or payload.get("experiment_id"),
-            "dataset_name": dataset_name,
-            "dataset_version": dataset_version,
-            "risk_level": risk_level,
-            "confidence_score": confidence_score,
-            "policy_decision": policy_decision,
-            "created_at": dt,
-            "summary": summary,
-        }
+        record = self._prepare_verification_report(payload, experiment_id=experiment_id, workspace_id=workspace_id)
         with self._connect() as connection:
             with connection.cursor() as cursor:
+                self._insert_verification_report_postgres(cursor, record)
+        return record
+
+    def save_verification_report_and_audit(
+        self,
+        payload: dict[str, Any],
+        *,
+        experiment_id: str | None = None,
+        workspace_id: str = "default",
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        record = self._prepare_verification_report(payload, experiment_id=experiment_id, workspace_id=workspace_id)
+        details = self._verification_audit_details(record)
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                self._insert_verification_report_postgres(cursor, record)
                 cursor.execute(
                     """
-                    INSERT INTO verification_reports (id, workspace_id, experiment_id, dataset_name, dataset_version, risk_level, confidence_score, policy_decision, created_at, summary_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO audit_events (
+                        id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        record["id"], record["workspace_id"], record["experiment_id"], record["dataset_name"], record["dataset_version"],
-                        record["risk_level"], record["confidence_score"], record["policy_decision"], record["created_at"],
-                        json.dumps(record["summary"], sort_keys=True, default=str),
+                        str(uuid4()), workspace_id, actor_id, actor_name, "verification.created",
+                        json.dumps(details, sort_keys=True), record["created_at"],
                     ),
                 )
         return record
+
+    @staticmethod
+    def _insert_verification_report_postgres(cursor: Any, record: dict[str, Any]) -> None:
+        cursor.execute(
+            """
+            INSERT INTO verification_reports (
+                id, workspace_id, experiment_id, dataset_name, dataset_version,
+                risk_level, confidence_score, policy_decision, created_at, summary_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                record["id"], record["workspace_id"], record["experiment_id"],
+                record["dataset_name"], record["dataset_version"], record["risk_level"],
+                record["confidence_score"], record["policy_decision"], record["created_at"],
+                json.dumps(record["summary"], sort_keys=True, default=str),
+            ),
+        )
 
     def get_verification_report(self, report_id: str, *, workspace_id: str = "default") -> dict[str, Any] | None:
         with self._connect() as connection:

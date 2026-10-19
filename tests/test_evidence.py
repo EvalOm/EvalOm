@@ -100,6 +100,8 @@ def test_validate_enforces_size_and_path_safety(tmp_path: Path):
     inside_link.symlink_to(inside_target)
     with pytest.raises(ValueError):
         register_file_evidence("inside-link.txt", artifact_root=tmp_path)
+    with pytest.raises(ValueError, match="max_file_size"):
+        registry.validate(evidence["evidence_id"], artifact_root=tmp_path, max_file_size=-1)
 
 
 def test_matching_digest_is_not_a_task_assurance_result(tmp_path: Path):

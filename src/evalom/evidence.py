@@ -249,6 +249,8 @@ class EvidenceRegistry:
         artifact_root: str | Path | None = None,
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
     ) -> dict[str, Any]:
+        if isinstance(max_file_size, bool) or not isinstance(max_file_size, int) or max_file_size < 0:
+            raise ValueError("max_file_size must be a non-negative integer.")
         record = self.get(evidence_id, workspace_id=workspace_id)
         if record is None:
             return {"evidence_id": evidence_id, "status": "not_found", "limitations": ["Evidence does not exist in this workspace."]}

@@ -96,6 +96,8 @@ Idempotency keys are workspace-scoped and bind to the normalized create payload;
 Set `EVALOM_DB_PATH` to choose a SQLite file, or set a PostgreSQL DSN such as `postgresql://user:pass@host:5432/evalom` to use the PostgreSQL-compatible backend. `evalom-api` binds to `127.0.0.1:8000` by default; `EVALOM_HOST` and `EVALOM_PORT` configure the listener. Setting `EVALOM_ADMIN_API_KEY` enables bearer-key authentication for API data routes. Without it, the API remains in unauthenticated local-development mode and must not be exposed to a network. SQLite migrations assign existing records to the `default` workspace. Use a durable mounted volume for the database in a container. This implementation is for local or single-instance deployments, not concurrent multi-node service operation.
 
 The store layer is selected by the DSN/connection string: SQLite paths keep the current local mode and PostgreSQL DSNs route to the PostgreSQL-compatible `PostgresExperimentStore` implementation with the same API surface; both are intentionally still single-writer and single-instance oriented.
+PostgreSQL integration tests are opt-in through `EVALOM_TEST_POSTGRES_DSN` and
+are skipped when no DSN is configured.
 
 ## Production hardening sequence
 

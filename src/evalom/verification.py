@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import math
-import random
-import statistics
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from .dataset import EvaluationDataset
+from .continuous import bootstrap_mean_interval
 from .runner import EvaluationRunResult
 from .statistical import wilson_score_interval
 
@@ -43,10 +42,6 @@ def _safe_float(value: Any) -> float | None:
     return numeric
 
 
-def _normal_quantile(probability: float) -> float:
-    return statistics.NormalDist().inv_cdf(probability)
-
-
 def _wilson_interval(successes: int, total: int, confidence_level: float) -> dict[str, float | None]:
     result = wilson_score_interval(successes, total, confidence_level=confidence_level)
     return {
@@ -56,43 +51,13 @@ def _wilson_interval(successes: int, total: int, confidence_level: float) -> dic
 
 
 def _bootstrap_mean_interval(values: list[float], confidence_level: float, *, resamples: int = 1000, random_seed: int | None = 0) -> dict[str, float | None]:
-    if not values:
-        return {"lower": None, "upper": None}
-
-    values = [float(value) for value in values]
-    observed_mean = sum(values) / len(values)
-    if all(value == values[0] for value in values):
-        return {"lower": float(values[0]), "upper": float(values[0])}
-
-    rng = random.Random(random_seed)
-    sample_means: list[float] = []
-    for _ in range(max(1, int(resamples))):
-        sample = [values[rng.randrange(len(values))] for _ in range(len(values))]
-        sample_means.append(sum(sample) / len(sample))
-
-    sample_means.sort()
-    alpha = (1.0 - confidence_level) / 2.0
-    lower = _percentile(sample_means, alpha)
-    upper = _percentile(sample_means, 1.0 - alpha)
-    if lower is None or upper is None:
-        return {"lower": observed_mean, "upper": observed_mean}
-    return {"lower": float(lower), "upper": float(upper)}
-
-
-def _percentile(sorted_values: list[float], probability: float) -> float | None:
-    if not sorted_values:
-        return None
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    position = probability * (len(sorted_values) - 1)
-    lower_index = int(math.floor(position))
-    upper_index = int(math.ceil(position))
-    if lower_index == upper_index:
-        return float(sorted_values[lower_index])
-    lower_value = sorted_values[lower_index]
-    upper_value = sorted_values[upper_index]
-    fraction = position - lower_index
-    return float(lower_value + (upper_value - lower_value) * fraction)
+    result = bootstrap_mean_interval(
+        values,
+        confidence_level=confidence_level,
+        resamples=max(1, int(resamples)),
+        seed=random_seed,
+    )
+    return {"lower": result.lower_bound, "upper": result.upper_bound}
 
 
 def normalize_evaluation_record(record: dict[str, Any]) -> dict[str, Any]:

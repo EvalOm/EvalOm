@@ -10,6 +10,7 @@ from .agent_assurance import (
     verify_agent_execution,
 )
 from .config import EvaluationConfig, QualityGate
+from .continuous import ContinuousStatisticalResult, bootstrap_mean_interval
 from .dataset import EvaluationDataset, Sample
 from .evaluators import BaseEvaluator, ContainsEvaluator, ExactMatchEvaluator, MRREvaluator, NDCGEvaluator, NumericToleranceEvaluator, RegexEvaluator, RetrievalRecallEvaluator
 from .experiment import ExperimentRecord, ExperimentTracker
@@ -67,6 +68,8 @@ __all__ = [
     "EvaluationRunResult",
     "EvaluationConfig",
     "QualityGate",
+    "ContinuousStatisticalResult",
+    "bootstrap_mean_interval",
     "ExperimentRecord",
     "ExperimentTracker",
     "EvidenceRecord",

@@ -97,6 +97,18 @@ or evidence sufficiency, and does not correct bias, correlation, or
 distribution shift. Release policy blocks an explicitly insufficient binary
 result rather than treating zero observations as approval.
 
+Continuous statistical assurance is available through a deterministic
+percentile bootstrap of the arithmetic mean. Results preserve summary
+statistics, confidence level, resample count, seed, method, and limitations.
+Empty and singleton samples are explicitly insufficient for uncertainty
+estimation; a configured minimum sample size may likewise mark a computable
+result insufficient without fabricating an interval. The bootstrap resamples
+individual observations and therefore assumes an appropriate independent,
+representative sampling design. It does not correct correlated observations,
+biased samples, label errors, or distribution shift. Statistical uncertainty
+and evidence sufficiency remain distinct from assurance status and release
+decisions.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

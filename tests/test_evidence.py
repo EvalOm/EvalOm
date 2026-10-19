@@ -68,6 +68,23 @@ def test_digest_status_cannot_be_forged_by_direct_or_serialized_construction():
         })
 
 
+@pytest.mark.parametrize("status", ["verified", "mismatch"])
+def test_storage_rejects_fabricated_trusted_digest_payload(tmp_path: Path, status: str):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    payload = register_reference_evidence(
+        evidence_type="test_result",
+        source="ci://forged",
+    ).to_dict()
+    payload.update({
+        "digest_status": status,
+        "verified_digest": "a" * 64,
+        "_trusted_digest": True,
+    })
+
+    with pytest.raises(ValueError, match="Trusted digest"):
+        store.save_evidence(payload)
+
+
 def test_reference_digest_verification_is_unavailable():
     evidence = register_reference_evidence(
         evidence_type="test_result",
@@ -186,6 +203,34 @@ def test_supersession_rejects_missing_inactive_and_cross_workspace_originals(tmp
     )
     with pytest.raises(ValueError):
         registry.supersede(original["evidence_id"], cross_workspace)
+
+
+@pytest.mark.parametrize("status", ["verified", "mismatch"])
+def test_atomic_supersession_rejects_fabricated_trusted_digest_payload(tmp_path: Path, status: str):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://1", workspace_id="a"
+    ))
+    replacement = register_reference_evidence(
+        evidence_type="human_review",
+        source="review://2",
+        workspace_id="a",
+        evidence_id="forged-replacement",
+    ).to_dict()
+    replacement.update({
+        "supersedes_id": original["evidence_id"],
+        "digest_status": status,
+        "verified_digest": "b" * 64,
+        "_trusted_digest": True,
+    })
+
+    with pytest.raises(ValueError, match="Trusted digest"):
+        store.supersede_evidence_and_audit(
+            original["evidence_id"],
+            replacement,
+        )
+    assert registry.get(original["evidence_id"], workspace_id="a")["lifecycle_status"] == "active"
 
 
 def test_failed_audit_rolls_back_supersession(tmp_path: Path):

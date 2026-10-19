@@ -449,13 +449,17 @@ class SQLiteExperimentStore:
             "total": total,
         }
 
-    def save_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def save_evidence(
+        self,
+        payload: dict[str, Any],
+        *,
+        verification_capability: object | None = None,
+    ) -> dict[str, Any]:
         required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
         if any(not payload.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(payload)
-        trusted_digest = record.pop("_trusted_digest", False)
-        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+        if record["digest_status"] in {"verified", "mismatch"} and not self._has_verified_digest_capability(verification_capability):
             raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         with self._connect() as connection:
@@ -515,13 +519,13 @@ class SQLiteExperimentStore:
         *,
         actor_id: str | None = None,
         actor_name: str | None = None,
+        verification_capability: object | None = None,
     ) -> dict[str, Any]:
         required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
         if any(not replacement.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(replacement)
-        trusted_digest = record.pop("_trusted_digest", False)
-        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+        if record["digest_status"] in {"verified", "mismatch"} and not self._has_verified_digest_capability(verification_capability):
             raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         if record["supersedes_id"] != evidence_id:
@@ -578,6 +582,12 @@ class SQLiteExperimentStore:
                     ),
                 )
         return record
+
+    @staticmethod
+    def _has_verified_digest_capability(capability: object | None) -> bool:
+        from .evidence import _TRUSTED_DIGEST_TOKEN
+
+        return capability is _TRUSTED_DIGEST_TOKEN
 
     def create(
         self,
@@ -1592,13 +1602,17 @@ class PostgresExperimentStore(SQLiteExperimentStore):
                 rows = cursor.fetchall()
         return {"items": [self._to_verification_record(row) for row in rows], "total": total}
 
-    def save_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def save_evidence(
+        self,
+        payload: dict[str, Any],
+        *,
+        verification_capability: object | None = None,
+    ) -> dict[str, Any]:
         required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
         if any(not payload.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(payload)
-        trusted_digest = record.pop("_trusted_digest", False)
-        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+        if record["digest_status"] in {"verified", "mismatch"} and not self._has_verified_digest_capability(verification_capability):
             raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         with self._connect() as connection:
@@ -1663,13 +1677,13 @@ class PostgresExperimentStore(SQLiteExperimentStore):
         *,
         actor_id: str | None = None,
         actor_name: str | None = None,
+        verification_capability: object | None = None,
     ) -> dict[str, Any]:
         required = ("evidence_id", "workspace_id", "evidence_type", "digest_status", "lifecycle_status", "created_at")
         if any(not replacement.get(name) for name in required):
             raise ValueError("Evidence payload is missing required fields.")
         record = dict(replacement)
-        trusted_digest = record.pop("_trusted_digest", False)
-        if record["digest_status"] in {"verified", "mismatch"} and not trusted_digest:
+        if record["digest_status"] in {"verified", "mismatch"} and not self._has_verified_digest_capability(verification_capability):
             raise ValueError("Trusted digest status requires byte verification.")
         record["metadata"] = _normalize_json_value(record.get("metadata") or {})
         if record["supersedes_id"] != evidence_id:

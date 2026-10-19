@@ -107,11 +107,6 @@ class EvidenceRecord:
             "created_at": self.created_at,
         }
 
-    def _storage_dict(self) -> dict[str, Any]:
-        payload = self.to_dict()
-        payload["_trusted_digest"] = self._digest_token is _TRUSTED_DIGEST_TOKEN
-        return payload
-
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "EvidenceRecord":
         if not isinstance(payload, dict):
@@ -224,7 +219,8 @@ class EvidenceRegistry:
         self.store = store
 
     def register(self, evidence: EvidenceRecord, *, actor_id: str | None = None, actor_name: str | None = None) -> dict[str, Any]:
-        record = self.store.save_evidence(evidence._storage_dict())
+        capability = _TRUSTED_DIGEST_TOKEN if evidence._digest_token is _TRUSTED_DIGEST_TOKEN else None
+        record = self.store.save_evidence(evidence.to_dict(), verification_capability=capability)
         self.store.log_audit_event(
             event_type="evidence.registered",
             workspace_id=evidence.workspace_id,
@@ -242,8 +238,13 @@ class EvidenceRegistry:
             raise ValueError("replacement.supersedes_id must identify the evidence being superseded.")
         return self.store.supersede_evidence_and_audit(
             evidence_id,
-            replacement._storage_dict(),
+            replacement.to_dict(),
             actor_id=actor_id,
+            verification_capability=(
+                _TRUSTED_DIGEST_TOKEN
+                if replacement._digest_token is _TRUSTED_DIGEST_TOKEN
+                else None
+            ),
         )
 
 

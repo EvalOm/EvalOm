@@ -124,3 +124,59 @@ def test_postgres_evidence_supersession_transaction():
 
     assert registry.get(original["evidence_id"], workspace_id="pg-evidence")["lifecycle_status"] == "superseded"
     assert registry.get("postgres-replacement", workspace_id="pg-evidence") is not None
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+@pytest.mark.parametrize("status", ["verified", "mismatch"])
+def test_postgres_evidence_rejects_fabricated_digest_payload(status):
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    payload = register_reference_evidence(
+        evidence_type="test_result",
+        source="ci://forged-postgres",
+        workspace_id=f"pg-forged-{uuid4().hex}",
+    ).to_dict()
+    payload.update({
+        "digest_status": status,
+        "verified_digest": "c" * 64,
+        "_trusted_digest": True,
+    })
+
+    with pytest.raises(ValueError, match="Trusted digest"):
+        store.save_evidence(payload)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+@pytest.mark.parametrize("status", ["verified", "mismatch"])
+def test_postgres_atomic_supersession_rejects_fabricated_digest_payload(status):
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_id = f"pg-forged-supersede-{uuid4().hex}"
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review",
+        source="review://postgres-original",
+        workspace_id=workspace_id,
+    ))
+    replacement = register_reference_evidence(
+        evidence_type="human_review",
+        source="review://postgres-replacement",
+        workspace_id=workspace_id,
+        evidence_id=f"forged-replacement-{uuid4().hex}",
+    ).to_dict()
+    replacement.update({
+        "supersedes_id": original["evidence_id"],
+        "digest_status": status,
+        "verified_digest": "d" * 64,
+        "_trusted_digest": True,
+    })
+
+    with pytest.raises(ValueError, match="Trusted digest"):
+        store.supersede_evidence_and_audit(original["evidence_id"], replacement)
+    assert registry.get(original["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "active"

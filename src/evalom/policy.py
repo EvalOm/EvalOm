@@ -28,7 +28,7 @@ def _normalize_confidence_level(value: Any) -> float:
         raise ValueError("confidence_level must be finite.")
     if 0.0 < numeric < 1.0:
         return numeric
-    if 1.0 <= numeric <= 100.0:
+    if 1.0 < numeric <= 100.0:
         return numeric / 100.0
     raise ValueError("confidence_level must be in the open interval (0, 1) or a percentage between 1 and 100.")
 
@@ -138,8 +138,16 @@ class ReleasePolicy:
         duplicate_ratio = float(dataset_health.get("duplicate_ratio", 0.0))
         distribution_shift = float(dataset_health.get("distribution_shift", 0.0))
         issues = [str(issue) for issue in summary.get("issues", [])]
+        binary_statistics = summary.get("binary_statistics")
 
         failures: list[str] = []
+        if isinstance(binary_statistics, dict) and binary_statistics.get("status") != "valid":
+            failures.append("Binary statistical result is insufficient; release is blocked.")
+        if isinstance(binary_statistics, dict) and binary_statistics.get("status") == "valid":
+            try:
+                lower_bound = float(binary_statistics["lower_bound"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("binary_statistics must contain a numeric lower_bound.") from exc
         assurance_status = summary.get("status")
         if assurance_status is not None and assurance_status != "verified":
             failures.append(

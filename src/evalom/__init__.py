@@ -36,6 +36,12 @@ from .riav import (
     normalize_reference_label,
 )
 from .runner import EvaluationRunResult, EvaluationRunner
+from .statistical import (
+    BinaryStatisticalResult,
+    calculate_binary_statistics,
+    calculate_wilson_interval,
+    wilson_score_interval,
+)
 from .verification import (
     DatasetHealth,
     EvaluationVerificationResult,
@@ -98,5 +104,9 @@ __all__ = [
     "VerificationEngine",
     "normalize_evaluation_record",
     "verify_evaluation_result",
+    "BinaryStatisticalResult",
+    "calculate_binary_statistics",
+    "calculate_wilson_interval",
+    "wilson_score_interval",
     "__version__",
 ]

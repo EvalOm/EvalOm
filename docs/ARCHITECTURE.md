@@ -86,6 +86,17 @@ and does not itself create an audit event; callers requiring the atomic
 guarantee must use the dedicated operation. Evidence registration and its
 audit event likewise remain separate operations.
 
+Binary statistical assurance is provided by a deterministic Wilson score
+confidence interval for a binomial success proportion. Results record the
+eligible observation count, successes, failures, observed rate, confidence
+level, bounds, method, and an explicit `insufficient_data` status for zero
+observations. Confidence level is separate from any release-policy threshold.
+The interval describes sampling uncertainty under independent, representative
+observations; it does not prove correctness, authenticity, future reliability,
+or evidence sufficiency, and does not correct bias, correlation, or
+distribution shift. Release policy blocks an explicitly insufficient binary
+result rather than treating zero observations as approval.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from .dataset import EvaluationDataset
 from .runner import EvaluationRunResult
+from .statistical import wilson_score_interval
 
 
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -27,7 +28,7 @@ def _normalize_confidence_level(value: Any) -> float:
         raise ValueError("confidence_level must be finite.")
     if 0.0 < numeric < 1.0:
         return numeric
-    if 1.0 <= numeric <= 100.0:
+    if 1.0 < numeric <= 100.0:
         return numeric / 100.0
     raise ValueError("confidence_level must be in the open interval (0, 1) or a percentage between 1 and 100.")
 
@@ -47,21 +48,10 @@ def _normal_quantile(probability: float) -> float:
 
 
 def _wilson_interval(successes: int, total: int, confidence_level: float) -> dict[str, float | None]:
-    if total <= 0:
-        return {"lower": None, "upper": None}
-    if successes < 0 or successes > total:
-        raise ValueError("successes must be between 0 and total.")
-
-    p_hat = successes / total
-    z_value = _normal_quantile((1.0 + confidence_level) / 2.0)
-    denominator = 1.0 + (z_value ** 2) / total
-    center = (p_hat + (z_value ** 2) / (2.0 * total)) / denominator
-    margin = (z_value * math.sqrt((p_hat * (1.0 - p_hat) / total) + ((z_value ** 2) / (4.0 * total ** 2)))) / denominator
-    lower = center - margin
-    upper = center + margin
+    result = wilson_score_interval(successes, total, confidence_level=confidence_level)
     return {
-        "lower": float(max(0.0, min(1.0, lower))),
-        "upper": float(max(0.0, min(1.0, upper))),
+        "lower": result.lower_bound,
+        "upper": result.upper_bound,
     }
 
 

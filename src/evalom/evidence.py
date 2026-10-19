@@ -146,7 +146,17 @@ def _safe_relative_path(root: Path, relative_path: str) -> Path:
     if path.is_absolute() or ".." in path.parts:
         raise ValueError("evidence path must be relative and cannot contain '..'.")
     root = root.resolve()
-    candidate = (root / path).resolve()
+    candidate_unresolved = root / path
+    try:
+        relative_parts = candidate_unresolved.relative_to(root).parts
+    except ValueError as exc:
+        raise ValueError("evidence path escapes the configured root.") from exc
+    current = root
+    for part in relative_parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError("evidence path cannot traverse symlinks.")
+    candidate = candidate_unresolved.resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:

@@ -63,6 +63,17 @@ and atomically records `evidence.deleted` with the lifecycle update. Normal
 evidence listings exclude deleted records; explicit historical retrieval can
 still inspect them.
 
+Evidence lifecycle states are `active`, `superseded`, and `deleted`.
+Supersession inserts replacement evidence while preserving the original
+historical record. Deletion is soft deletion: it changes only the evidence
+metadata and does not remove the underlying artifact. Supersession and
+deletion lifecycle changes and their audit events share one database
+transaction; evidence registration currently persists the record and writes
+its audit event separately. These audit events are transactionally consistent,
+not tamper-proof. Digest integrity does not establish correctness or
+authenticity of the original claim. Permanent erasure and automated retention
+policies are not implemented in this work package.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

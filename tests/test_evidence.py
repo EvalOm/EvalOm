@@ -73,6 +73,51 @@ def test_validate_file_evidence_detects_change_without_mutating_history(tmp_path
     assert registry.get(evidence["evidence_id"], workspace_id="a")["verified_digest"] == historical
 
 
+def test_validate_removed_file_is_unavailable(tmp_path: Path):
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("original", encoding="utf-8")
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_file_evidence("result.txt", artifact_root=tmp_path))
+    artifact.unlink()
+
+    result = registry.validate(evidence["evidence_id"], artifact_root=tmp_path)
+
+    assert result["status"] == "unavailable"
+
+
+def test_validate_enforces_size_and_path_safety(tmp_path: Path):
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("content", encoding="utf-8")
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_file_evidence("result.txt", artifact_root=tmp_path))
+    assert registry.validate(evidence["evidence_id"], artifact_root=tmp_path, max_file_size=2)["status"] == "unavailable"
+
+    inside_target = tmp_path / "inside-target.txt"
+    inside_target.write_text("inside", encoding="utf-8")
+    inside_link = tmp_path / "inside-link.txt"
+    inside_link.symlink_to(inside_target)
+    with pytest.raises(ValueError):
+        register_file_evidence("inside-link.txt", artifact_root=tmp_path)
+
+
+def test_matching_digest_is_not_a_task_assurance_result(tmp_path: Path):
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("correct-looking", encoding="utf-8")
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_file_evidence(
+        "result.txt", artifact_root=tmp_path, task_id="task-1"
+    ))
+
+    result = registry.validate(evidence["evidence_id"], artifact_root=tmp_path)
+
+    assert result["status"] == "matched"
+    assert "task_status" not in result
+    assert result["limitations"]
+
+
 def test_validate_reference_evidence_is_explicitly_unavailable(tmp_path: Path):
     store = SQLiteExperimentStore(tmp_path / "evidence.db")
     registry = EvidenceRegistry(store)

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import threading
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from evalom.api import create_app
-from evalom.evidence import EvidenceRegistry, register_reference_evidence
+from evalom.evidence import EvidenceRecord, EvidenceRegistry, register_reference_evidence
 from evalom.storage import create_experiment_store
 
 
@@ -204,3 +205,192 @@ def test_postgres_evidence_validation_and_soft_delete():
     assert deleted["lifecycle_status"] == "deleted"
     assert store.list_evidence(workspace_id=workspace_id) == []
     assert store.list_evidence(workspace_id=workspace_id, include_deleted=True)[0]["lifecycle_status"] == "deleted"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_supersession_insert_failure_rolls_back():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_id = f"pg-rollback-{uuid4().hex}"
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://original", workspace_id=workspace_id,
+    ))
+    duplicate = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://duplicate", workspace_id=workspace_id,
+        evidence_id=f"pg-duplicate-{uuid4().hex}",
+    ))
+    replacement = EvidenceRecord(
+        evidence_id=duplicate["evidence_id"], evidence_type="human_review",
+        workspace_id=workspace_id, source="review://replacement",
+        supersedes_id=original["evidence_id"],
+    )
+
+    with pytest.raises(ValueError):
+        registry.supersede(original["evidence_id"], replacement)
+
+    assert registry.get(original["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "active"
+    assert registry.get(duplicate["evidence_id"], workspace_id=workspace_id)["source"] == "review://duplicate"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_supersession_audit_failure_rolls_back():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_id = f"pg-audit-rollback-{uuid4().hex}"
+    function_name = f"fail_evidence_audit_{uuid4().hex}"
+    trigger_name = f"fail_evidence_audit_trigger_{uuid4().hex}"
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://original", workspace_id=workspace_id,
+    ))
+    replacement = EvidenceRecord(
+        evidence_id=f"pg-replacement-{uuid4().hex}", evidence_type="human_review",
+        workspace_id=workspace_id, source="review://replacement",
+        supersedes_id=original["evidence_id"],
+    )
+    try:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    CREATE FUNCTION {function_name}() RETURNS trigger AS $$
+                    BEGIN
+                        IF NEW.event_type = 'evidence.superseded' THEN
+                            RAISE EXCEPTION 'supersession audit failure';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql
+                """)
+                cursor.execute(
+                    f"CREATE TRIGGER {trigger_name} BEFORE INSERT ON audit_events "
+                    f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                )
+        with pytest.raises(Exception, match="supersession audit failure"):
+            registry.supersede(original["evidence_id"], replacement)
+    finally:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name} ON audit_events")
+                cursor.execute(f"DROP FUNCTION IF EXISTS {function_name}()")
+
+    assert registry.get(original["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "active"
+    assert registry.get(replacement.evidence_id, workspace_id=workspace_id) is None
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_soft_delete_audit_failure_rolls_back():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_id = f"pg-delete-rollback-{uuid4().hex}"
+    function_name = f"fail_evidence_delete_{uuid4().hex}"
+    trigger_name = f"fail_evidence_delete_trigger_{uuid4().hex}"
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://delete", workspace_id=workspace_id,
+    ))
+    try:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    CREATE FUNCTION {function_name}() RETURNS trigger AS $$
+                    BEGIN
+                        IF NEW.event_type = 'evidence.deleted' THEN
+                            RAISE EXCEPTION 'delete audit failure';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql
+                """)
+                cursor.execute(
+                    f"CREATE TRIGGER {trigger_name} BEFORE INSERT ON audit_events "
+                    f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                )
+        with pytest.raises(Exception, match="delete audit failure"):
+            registry.delete(evidence["evidence_id"], workspace_id=workspace_id)
+    finally:
+        with store._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name} ON audit_events")
+                cursor.execute(f"DROP FUNCTION IF EXISTS {function_name}()")
+
+    assert registry.get(evidence["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "active"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_concurrent_supersession_only_one_attempt_succeeds():
+    pytest.importorskip("psycopg")
+    dsn = os.environ["EVALOM_TEST_POSTGRES_DSN"]
+    setup_store = create_experiment_store(dsn)
+    registry = EvidenceRegistry(setup_store)
+    workspace_id = f"pg-concurrent-{uuid4().hex}"
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://concurrent", workspace_id=workspace_id,
+    ))
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def attempt(index: int) -> None:
+        store = create_experiment_store(dsn)
+        candidate = EvidenceRecord(
+            evidence_id=f"pg-concurrent-replacement-{index}-{uuid4().hex}",
+            evidence_type="human_review", workspace_id=workspace_id,
+            source=f"review://replacement-{index}", supersedes_id=original["evidence_id"],
+        )
+        try:
+            barrier.wait(timeout=10)
+            EvidenceRegistry(store).supersede(original["evidence_id"], candidate)
+        except Exception:
+            outcomes.append("failed")
+        else:
+            outcomes.append("succeeded")
+
+    threads = [threading.Thread(target=attempt, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert outcomes.count("succeeded") == 1
+    assert outcomes.count("failed") == 1
+    assert registry.get(original["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "superseded"
+    assert len(registry.store.list_evidence(workspace_id=workspace_id)) == 2
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_evidence_workspace_isolation_for_lifecycle_operations():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_a = f"pg-workspace-a-{uuid4().hex}"
+    workspace_b = f"pg-workspace-b-{uuid4().hex}"
+    original = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://isolated", workspace_id=workspace_a,
+    ))
+    replacement = EvidenceRecord(
+        evidence_id=f"pg-isolated-replacement-{uuid4().hex}", evidence_type="human_review",
+        workspace_id=workspace_b, source="review://replacement",
+        supersedes_id=original["evidence_id"],
+    )
+
+    assert registry.get(original["evidence_id"], workspace_id=workspace_b) is None
+    with pytest.raises(ValueError):
+        registry.supersede(original["evidence_id"], replacement)
+    with pytest.raises(ValueError):
+        registry.delete(original["evidence_id"], workspace_id=workspace_b)
+    assert registry.get(original["evidence_id"], workspace_id=workspace_a)["lifecycle_status"] == "active"

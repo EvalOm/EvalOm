@@ -53,6 +53,16 @@ is an application trust boundary, not a Python security sandbox:
 trusted in-process code can still bypass conventions, so persisted evidence
 must be treated according to its recorded provenance and validation history.
 
+`EvidenceRegistry.validate()` rechecks current artifact bytes without
+rewriting historical registration facts. It reports `matched`, `mismatch`,
+`unavailable`, `invalid`, or `not_found`; a matching digest establishes
+integrity only and does not establish task correctness or assurance
+sufficiency. `EvidenceRegistry.delete()` performs a workspace-scoped soft
+delete for active evidence, retains the database record and physical artifact,
+and atomically records `evidence.deleted` with the lifecycle update. Normal
+evidence listings exclude deleted records; explicit historical retrieval can
+still inspect them.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

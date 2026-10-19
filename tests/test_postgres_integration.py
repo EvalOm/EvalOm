@@ -180,3 +180,27 @@ def test_postgres_atomic_supersession_rejects_fabricated_digest_payload(status):
     with pytest.raises(ValueError, match="Trusted digest"):
         store.supersede_evidence_and_audit(original["evidence_id"], replacement)
     assert registry.get(original["evidence_id"], workspace_id=workspace_id)["lifecycle_status"] == "active"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EVALOM_TEST_POSTGRES_DSN"),
+    reason="Set EVALOM_TEST_POSTGRES_DSN to run PostgreSQL integration coverage.",
+)
+def test_postgres_evidence_validation_and_soft_delete():
+    pytest.importorskip("psycopg")
+    store = create_experiment_store(os.environ["EVALOM_TEST_POSTGRES_DSN"])
+    registry = EvidenceRegistry(store)
+    workspace_id = f"pg-lifecycle-{uuid4().hex}"
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="human_review",
+        source="review://postgres-lifecycle",
+        workspace_id=workspace_id,
+    ))
+
+    validation = registry.validate(evidence["evidence_id"], workspace_id=workspace_id)
+    deleted = registry.delete(evidence["evidence_id"], workspace_id=workspace_id, actor_id="pg-actor")
+
+    assert validation["status"] == "unavailable"
+    assert deleted["lifecycle_status"] == "deleted"
+    assert store.list_evidence(workspace_id=workspace_id) == []
+    assert store.list_evidence(workspace_id=workspace_id, include_deleted=True)[0]["lifecycle_status"] == "deleted"

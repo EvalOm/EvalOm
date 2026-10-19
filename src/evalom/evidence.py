@@ -49,6 +49,31 @@ def _metadata(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _hash_file(path: Path, *, max_file_size: int) -> tuple[str, int]:
+    before = path.stat()
+    if before.st_size > max_file_size:
+        raise ValueError(f"evidence file exceeds the maximum size of {max_file_size} bytes.")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("evidence file changed before ingestion.")
+        bytes_read = 0
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            bytes_read += len(chunk)
+            if bytes_read > max_file_size:
+                raise ValueError(f"evidence file exceeds the maximum size of {max_file_size} bytes.")
+            digest.update(chunk)
+        after = os.fstat(handle.fileno())
+    if (
+        (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        or bytes_read != after.st_size
+    ):
+        raise ValueError("evidence file changed during ingestion.")
+    return digest.hexdigest(), bytes_read
+
+
 @dataclass(frozen=True)
 class EvidenceRecord:
     evidence_id: str = field(default_factory=lambda: str(uuid4()))
@@ -146,34 +171,7 @@ def register_file_evidence(
     candidate = _safe_relative_path(Path(artifact_root), path)
     if not candidate.is_file() or candidate.is_symlink():
         raise ValueError("evidence path must reference a regular file inside the configured root.")
-    before = candidate.stat()
-    if before.st_size > max_file_size:
-        raise ValueError(f"evidence file exceeds the maximum size of {max_file_size} bytes.")
-    digest = hashlib.sha256()
-    with candidate.open("rb") as handle:
-        opened = os.fstat(handle.fileno())
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise ValueError("evidence file changed before ingestion.")
-        bytes_read = 0
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            bytes_read += len(chunk)
-            if bytes_read > max_file_size:
-                raise ValueError(f"evidence file exceeds the maximum size of {max_file_size} bytes.")
-            digest.update(chunk)
-        after = os.fstat(handle.fileno())
-    if (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ) != (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-    ) or bytes_read != after.st_size:
-        raise ValueError("evidence file changed during ingestion.")
-    verified = digest.hexdigest()
+    verified, bytes_read = _hash_file(candidate, max_file_size=max_file_size)
     status = "verified" if claimed_digest is None or claimed_digest.lower() == verified else "mismatch"
     return EvidenceRecord(
         evidence_id=evidence_id or str(uuid4()),
@@ -232,6 +230,67 @@ class EvidenceRegistry:
 
     def get(self, evidence_id: str, *, workspace_id: str = "default") -> dict[str, Any] | None:
         return self.store.get_evidence(evidence_id, workspace_id=workspace_id)
+
+    def validate(
+        self,
+        evidence_id: str,
+        *,
+        workspace_id: str = "default",
+        artifact_root: str | Path | None = None,
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    ) -> dict[str, Any]:
+        record = self.get(evidence_id, workspace_id=workspace_id)
+        if record is None:
+            return {"evidence_id": evidence_id, "status": "not_found", "limitations": ["Evidence does not exist in this workspace."]}
+        result: dict[str, Any] = {
+            "evidence_id": evidence_id,
+            "workspace_id": workspace_id,
+            "lifecycle_status": record.get("lifecycle_status"),
+            "historical_digest": record.get("verified_digest"),
+            "current_digest": None,
+            "status": "unavailable",
+            "integrity_match": None,
+            "limitations": [],
+        }
+        try:
+            if record.get("evidence_type") not in EVIDENCE_TYPES:
+                raise ValueError("Unsupported evidence type.")
+            _metadata(record.get("metadata", {}))
+        except ValueError as exc:
+            result.update(status="invalid", limitations=[str(exc)])
+            return result
+        if record.get("lifecycle_status") == "deleted":
+            result["limitations"].append("Evidence is soft-deleted; historical metadata is retained.")
+        if record.get("evidence_type") != "artifact":
+            result["limitations"].append("Byte-level validation is unavailable for reference evidence.")
+            return result
+        if artifact_root is None:
+            result["limitations"].append("An artifact root is required for current validation.")
+            return result
+        try:
+            candidate = _safe_relative_path(Path(artifact_root), str(record.get("source", "")))
+            if not candidate.is_file() or candidate.is_symlink():
+                raise ValueError("Referenced evidence artifact is unavailable.")
+            current_digest, size = _hash_file(candidate, max_file_size=max_file_size)
+        except (OSError, ValueError) as exc:
+            result["limitations"].append(str(exc))
+            result["status"] = "unavailable"
+            return result
+        historical = record.get("verified_digest")
+        result["current_digest"] = current_digest
+        result["size_bytes"] = size
+        if not isinstance(historical, str) or len(historical) != 64:
+            result["limitations"].append("No trusted historical digest is available for comparison.")
+            return result
+        result["integrity_match"] = current_digest.lower() == historical.lower()
+        result["status"] = "matched" if result["integrity_match"] else "mismatch"
+        result["limitations"].append("A matching digest establishes integrity only, not correctness or assurance sufficiency.")
+        return result
+
+    def delete(self, evidence_id: str, *, workspace_id: str = "default", actor_id: str | None = None, actor_name: str | None = None) -> dict[str, Any]:
+        return self.store.soft_delete_evidence_and_audit(
+            evidence_id, workspace_id=workspace_id, actor_id=actor_id, actor_name=actor_name
+        )
 
     def supersede(self, evidence_id: str, replacement: EvidenceRecord, *, actor_id: str | None = None) -> dict[str, Any]:
         if replacement.supersedes_id != evidence_id:

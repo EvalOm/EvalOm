@@ -494,6 +494,16 @@ class SQLiteExperimentStore:
             return None
         return self._evidence_row(row)
 
+    def list_evidence(self, *, workspace_id: str = "default", include_deleted: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM evidence_records WHERE workspace_id = ?"
+        params: list[Any] = [workspace_id]
+        if not include_deleted:
+            query += " AND lifecycle_status != 'deleted'"
+        query += " ORDER BY created_at DESC, id DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._evidence_row(row) for row in rows]
+
     @staticmethod
     def _evidence_row(row: sqlite3.Row) -> dict[str, Any]:
         record = dict(row)
@@ -582,6 +592,50 @@ class SQLiteExperimentStore:
                     ),
                 )
         return record
+
+    def soft_delete_evidence_and_audit(
+        self,
+        evidence_id: str,
+        *,
+        workspace_id: str = "default",
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM evidence_records WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'active'",
+                (evidence_id, workspace_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Only active evidence in the workspace can be deleted.")
+            updated = connection.execute(
+                """
+                UPDATE evidence_records SET lifecycle_status = 'deleted'
+                WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'active'
+                """,
+                (evidence_id, workspace_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Evidence was deleted concurrently.")
+            connection.execute(
+                """
+                INSERT INTO audit_events (
+                    id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()), workspace_id, actor_id, actor_name, "evidence.deleted",
+                    json.dumps({"evidence_id": evidence_id}, sort_keys=True),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            deleted = self._evidence_row(
+                connection.execute(
+                    "SELECT * FROM evidence_records WHERE id = ? AND workspace_id = ?",
+                    (evidence_id, workspace_id),
+                ).fetchone()
+            )
+        return deleted
 
     @staticmethod
     def _has_verified_digest_capability(capability: object | None) -> bool:
@@ -1647,6 +1701,17 @@ class PostgresExperimentStore(SQLiteExperimentStore):
             return None
         return self._to_evidence_record(row)
 
+    def list_evidence(self, *, workspace_id: str = "default", include_deleted: bool = False) -> list[dict[str, Any]]:
+        clause = "" if include_deleted else " AND lifecycle_status != 'deleted'"
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT id, workspace_id, evidence_type, task_id, execution_id, source, claimed_digest, verified_digest, digest_status, lifecycle_status, supersedes_id, created_at, metadata_json FROM evidence_records WHERE workspace_id = %s{clause} ORDER BY created_at DESC, id DESC",
+                    (workspace_id,),
+                )
+                rows = cursor.fetchall()
+        return [self._to_evidence_record(row) for row in rows]
+
     @staticmethod
     def _to_evidence_record(row: Any) -> dict[str, Any]:
         names = (
@@ -1738,6 +1803,49 @@ class PostgresExperimentStore(SQLiteExperimentStore):
                         ),
                     )
         return record
+
+    def soft_delete_evidence_and_audit(
+        self,
+        evidence_id: str,
+        *,
+        workspace_id: str = "default",
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM evidence_records WHERE id = %s AND workspace_id = %s AND lifecycle_status = 'active' FOR UPDATE",
+                    (evidence_id, workspace_id),
+                )
+                if cursor.fetchone() is None:
+                    raise ValueError("Only active evidence in the workspace can be deleted.")
+                cursor.execute(
+                    """
+                    UPDATE evidence_records SET lifecycle_status = 'deleted'
+                    WHERE id = %s AND workspace_id = %s AND lifecycle_status = 'active'
+                    """,
+                    (evidence_id, workspace_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Evidence was deleted concurrently.")
+                cursor.execute(
+                    """
+                    INSERT INTO audit_events (
+                        id, workspace_id, actor_id, actor_name, event_type, details_json, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        str(uuid4()), workspace_id, actor_id, actor_name, "evidence.deleted",
+                        json.dumps({"evidence_id": evidence_id}, sort_keys=True),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                cursor.execute(
+                    "SELECT id, workspace_id, evidence_type, task_id, execution_id, source, claimed_digest, verified_digest, digest_status, lifecycle_status, supersedes_id, created_at, metadata_json FROM evidence_records WHERE id = %s AND workspace_id = %s",
+                    (evidence_id, workspace_id),
+                )
+                return self._to_evidence_record(cursor.fetchone())
 
     def check_ready(self) -> bool:
         with self._connect() as connection:

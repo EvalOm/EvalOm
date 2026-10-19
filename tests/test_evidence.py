@@ -57,6 +57,96 @@ def test_missing_file_is_rejected(tmp_path: Path):
         register_file_evidence("missing.txt", artifact_root=tmp_path)
 
 
+def test_validate_file_evidence_detects_change_without_mutating_history(tmp_path: Path):
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("original", encoding="utf-8")
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_file_evidence("result.txt", artifact_root=tmp_path, workspace_id="a"))
+    historical = evidence["verified_digest"]
+    artifact.write_text("changed", encoding="utf-8")
+
+    result = registry.validate(evidence["evidence_id"], workspace_id="a", artifact_root=tmp_path)
+
+    assert result["status"] == "mismatch"
+    assert result["historical_digest"] == historical
+    assert registry.get(evidence["evidence_id"], workspace_id="a")["verified_digest"] == historical
+
+
+def test_validate_reference_evidence_is_explicitly_unavailable(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="test_result", source="ci://run", workspace_id="a"
+    ))
+
+    result = registry.validate(evidence["evidence_id"], workspace_id="a")
+
+    assert result["status"] == "unavailable"
+    assert result["integrity_match"] is None
+
+
+def test_validate_is_workspace_scoped_and_does_not_verify_tasks(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://1", workspace_id="a", task_id="task-1"
+    ))
+
+    assert registry.validate(evidence["evidence_id"], workspace_id="b")["status"] == "not_found"
+    assert "verified" not in registry.validate(evidence["evidence_id"], workspace_id="a")["status"]
+
+
+def test_soft_delete_is_atomic_audited_and_retains_artifact(tmp_path: Path):
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("retain", encoding="utf-8")
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_file_evidence("result.txt", artifact_root=tmp_path, workspace_id="a"))
+
+    deleted = registry.delete(evidence["evidence_id"], workspace_id="a", actor_id="actor-1")
+
+    assert deleted["lifecycle_status"] == "deleted"
+    assert artifact.read_text(encoding="utf-8") == "retain"
+    assert store.list_evidence(workspace_id="a") == []
+    assert store.list_evidence(workspace_id="a", include_deleted=True)[0]["lifecycle_status"] == "deleted"
+    assert any(event["event_type"] == "evidence.deleted" for event in store.list_audit_events(workspace_id="a")["items"])
+
+
+def test_soft_delete_rejects_missing_cross_workspace_and_repeated_requests(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://1", workspace_id="a"
+    ))
+    with pytest.raises(ValueError):
+        registry.delete(evidence["evidence_id"], workspace_id="b")
+    registry.delete(evidence["evidence_id"], workspace_id="a")
+    with pytest.raises(ValueError):
+        registry.delete(evidence["evidence_id"], workspace_id="a")
+    with pytest.raises(ValueError):
+        registry.delete("missing", workspace_id="a")
+
+
+def test_soft_delete_audit_failure_rolls_back(tmp_path: Path):
+    store = SQLiteExperimentStore(tmp_path / "evidence.db")
+    registry = EvidenceRegistry(store)
+    evidence = registry.register(register_reference_evidence(
+        evidence_type="human_review", source="review://1", workspace_id="a"
+    ))
+    with store._connect() as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_evidence_delete BEFORE INSERT ON audit_events
+            WHEN NEW.event_type = 'evidence.deleted'
+            BEGIN SELECT RAISE(ABORT, 'delete audit failure'); END
+            """
+        )
+    with pytest.raises(Exception, match="delete audit failure"):
+        registry.delete(evidence["evidence_id"], workspace_id="a")
+    assert registry.get(evidence["evidence_id"], workspace_id="a")["lifecycle_status"] == "active"
+
+
 def test_digest_status_cannot_be_forged_by_direct_or_serialized_construction():
     with pytest.raises(ValueError):
         EvidenceRecord(digest_status="verified", verified_digest="a" * 64)

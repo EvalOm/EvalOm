@@ -131,6 +131,17 @@ filesystem paths. Missing, unavailable, or insufficient required evidence
 produces `insufficient_evidence`; failed required checks produce `failed`.
 Profile selection cannot override mandatory checks or manufacture evidence.
 
+Release policies preserve the distinction between assurance, check status,
+evidence adequacy, comparison outcomes, and the final decision. Policies are
+versioned and declarative, validate required and optional check identifiers,
+evidence requirements, comparison thresholds, and task-profile requirements.
+Missing, duplicate, failed, not-run, indeterminate, invalid, or unsupported
+mandatory results block release and are listed in the decision explanation.
+Optional check failures do not become mandatory failures unless explicitly
+configured. A policy decision does not execute evaluators or profile content,
+and a favorable aggregate metric cannot override an unresolved mandatory
+requirement.
+
 Research-Informed Assurance Validation (RIAV) compares normalized binary
 reference outcomes and assessments deterministically. It reports TP, FP, TN,
 and FN together with precision, recall, specificity, F1, and explicit

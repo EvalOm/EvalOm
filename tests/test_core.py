@@ -713,6 +713,95 @@ def test_release_policy_blocks_unverified_assurance():
     assert any("not verified" in failure for failure in decision["failures"])
 
 
+def test_release_policy_requires_every_configured_check_and_explains_missing_results():
+    policy = ReleasePolicy(
+        max_risk_level="HIGH",
+        min_confidence_score=0,
+        min_dataset_quality=0,
+        min_evaluator_reliability=0,
+        min_statistical_confidence=0,
+        required_checks=["tests", "review"],
+    )
+    decision = policy.evaluate({
+        "status": "verified",
+        "risk_level": "LOW",
+        "confidence_score": 100,
+        "dataset_quality": 1,
+        "evaluator_reliability": 1,
+        "statistical_confidence": 1,
+        "checks": [{"name": "tests", "status": "passed", "passed": True}],
+        "issues": [],
+        "dataset_health": {"duplicate_ratio": 0, "distribution_shift": 0},
+    })
+
+    assert decision["decision"] == "BLOCK"
+    assert decision["passed_requirements"] == ["tests"]
+    assert decision["not_run_requirements"] == ["review"]
+    assert any("review" in failure and "not run" in failure for failure in decision["failures"])
+
+
+def test_release_policy_blocks_required_evidence_comparison_and_profile_failures():
+    policy = ReleasePolicy(
+        max_risk_level="HIGH",
+        min_confidence_score=0,
+        min_dataset_quality=0,
+        min_evaluator_reliability=0,
+        min_statistical_confidence=0,
+        required_evidence=["test_result"],
+        required_comparisons=[{"metric": "accuracy", "max_regression": 0.02}],
+        required_task_profile={"profile_id": "demo.feature", "profile_version": "1.0"},
+    )
+    decision = policy.evaluate({
+        "status": "verified",
+        "risk_level": "LOW",
+        "confidence_score": 100,
+        "dataset_quality": 1,
+        "evaluator_reliability": 1,
+        "statistical_confidence": 1,
+        "evidence": {"test_result": {"available": False, "sufficient": False}},
+        "comparisons": {"accuracy": {"status": "verified", "difference": -0.1, "direction": "higher_is_better"}},
+        "task_profile_result": {"status": "insufficient_evidence"},
+        "issues": [],
+        "dataset_health": {"duplicate_ratio": 0, "distribution_shift": 0},
+    })
+
+    assert decision["decision"] == "BLOCK"
+    assert len(decision["failures"]) == 3
+
+
+def test_release_policy_rejects_duplicate_and_unknown_required_configuration():
+    with pytest.raises(ValueError):
+        ReleasePolicy.from_dict({"required_checks": ["tests", "tests"]})
+    with pytest.raises(ValueError):
+        ReleasePolicy.from_dict({"required_checks": ["tests"], "optional_checks": ["tests"]})
+    with pytest.raises(ValueError):
+        ReleasePolicy.from_dict({"policy_version": "9.0"})
+
+
+def test_release_policy_rejects_ambiguous_runtime_results():
+    policy = ReleasePolicy(
+        max_risk_level="HIGH",
+        min_confidence_score=0,
+        min_dataset_quality=0,
+        min_evaluator_reliability=0,
+        min_statistical_confidence=0,
+        required_evidence=["test_result"],
+    )
+    verification = {
+        "risk_level": "LOW",
+        "confidence_score": 100,
+        "dataset_quality": 1,
+        "evaluator_reliability": 1,
+        "statistical_confidence": 1,
+        "evidence": [
+            {"evidence_type": "test_result", "available": True, "sufficient": True},
+            {"evidence_type": "test_result", "available": False, "sufficient": False},
+        ],
+    }
+    with pytest.raises(ValueError, match="Duplicate evidence"):
+        policy.evaluate(verification)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

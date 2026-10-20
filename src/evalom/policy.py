@@ -7,6 +7,8 @@ from typing import Any
 
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 _POLICY_FIELDS = {
+    "policy_id",
+    "policy_version",
     "max_risk_level",
     "min_confidence_score",
     "min_dataset_quality",
@@ -17,7 +19,14 @@ _POLICY_FIELDS = {
     "confidence_level",
     "allowed_issues",
     "block_on_issues",
+    "required_checks",
+    "optional_checks",
+    "required_evidence",
+    "required_comparisons",
+    "required_task_profile",
 }
+_CHECK_STATUSES = {"passed", "failed", "not_run", "indeterminate"}
+_POLICY_VERSION = "1.0"
 
 
 def _normalize_confidence_level(value: Any) -> float:
@@ -37,6 +46,8 @@ def _normalize_confidence_level(value: Any) -> float:
 class ReleasePolicy:
     """Policy used to decide whether verification output is safe enough to ship."""
 
+    policy_id: str = "default"
+    policy_version: str = _POLICY_VERSION
     max_risk_level: str = "MEDIUM"
     min_confidence_score: float = 80.0
     min_dataset_quality: float = 0.75
@@ -47,8 +58,45 @@ class ReleasePolicy:
     confidence_level: float = 0.95
     allowed_issues: list[str] = field(default_factory=list)
     block_on_issues: bool = False
+    required_checks: list[str] = field(default_factory=list)
+    optional_checks: list[str] = field(default_factory=list)
+    required_evidence: list[str] = field(default_factory=list)
+    required_comparisons: list[dict[str, Any]] = field(default_factory=list)
+    required_task_profile: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.policy_id, str) or not self.policy_id.strip():
+            raise ValueError("policy_id must be a non-empty string.")
+        if self.policy_version != _POLICY_VERSION:
+            raise ValueError(f"Unsupported policy_version: {self.policy_version!r}.")
+        for name in ("required_checks", "optional_checks", "required_evidence"):
+            values = getattr(self, name)
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+                raise ValueError(f"{name} must be a list of non-empty strings.")
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates.")
+        if set(self.required_checks) & set(self.optional_checks):
+            raise ValueError("A check cannot be both required and optional.")
+        if not isinstance(self.required_comparisons, list) or any(not isinstance(item, dict) for item in self.required_comparisons):
+            raise ValueError("required_comparisons must be a list of dictionaries.")
+        comparison_ids: list[str] = []
+        for item in self.required_comparisons:
+            metric = item.get("metric")
+            if not isinstance(metric, str) or not metric.strip():
+                raise ValueError("Each required comparison needs a metric.")
+            comparison_ids.append(metric)
+            for field_name in ("max_regression", "min_improvement"):
+                if field_name in item and (
+                    isinstance(item[field_name], bool)
+                    or not isinstance(item[field_name], (int, float))
+                    or not math.isfinite(float(item[field_name]))
+                    or float(item[field_name]) < 0
+                ):
+                    raise ValueError(f"{field_name} must be a finite non-negative number.")
+        if len(comparison_ids) != len(set(comparison_ids)):
+            raise ValueError("required_comparisons must not contain duplicate metrics.")
+        if self.required_task_profile is not None and not isinstance(self.required_task_profile, dict):
+            raise ValueError("required_task_profile must be a dictionary.")
         if not isinstance(self.max_risk_level, str):
             raise ValueError("max_risk_level must be LOW, MEDIUM, or HIGH.")
         self.max_risk_level = self.max_risk_level.upper()
@@ -108,6 +156,8 @@ class ReleasePolicy:
             raise ValueError("allowed_issues must be a list of non-empty strings.")
 
         return cls(
+            policy_id=payload.get("policy_id", "default"),
+            policy_version=payload.get("policy_version", _POLICY_VERSION),
             max_risk_level=payload.get("max_risk_level", "MEDIUM"),
             min_confidence_score=payload.get("min_confidence_score", 80.0),
             min_dataset_quality=payload.get("min_dataset_quality", 0.75),
@@ -118,6 +168,11 @@ class ReleasePolicy:
             confidence_level=payload.get("confidence_level", 0.95),
             allowed_issues=allowed_issues,
             block_on_issues=payload.get("block_on_issues", False),
+            required_checks=payload.get("required_checks", []),
+            optional_checks=payload.get("optional_checks", []),
+            required_evidence=payload.get("required_evidence", []),
+            required_comparisons=payload.get("required_comparisons", []),
+            required_task_profile=payload.get("required_task_profile"),
         )
 
     def evaluate(self, verification: dict[str, Any] | Any) -> dict[str, Any]:
@@ -141,6 +196,97 @@ class ReleasePolicy:
         binary_statistics = summary.get("binary_statistics")
 
         failures: list[str] = []
+        passed_requirements: list[str] = []
+        failed_requirements: list[str] = []
+        not_run_requirements: list[str] = []
+        indeterminate_requirements: list[str] = []
+        checks = summary.get("checks", {})
+        if isinstance(checks, list):
+            check_map: dict[str, dict[str, Any]] = {}
+            for item in checks:
+                if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                    raise ValueError("checks list entries must contain a string name.")
+                name = item["name"]
+                if name in check_map:
+                    raise ValueError(f"Duplicate check result: {name}.")
+                check_map[name] = item
+            checks = check_map
+        if not isinstance(checks, dict):
+            raise ValueError("checks must be a dictionary or list.")
+        for check_name in self.required_checks:
+            result = checks.get(check_name)
+            status = result.get("status") if isinstance(result, dict) else "not_run"
+            if status not in _CHECK_STATUSES:
+                raise ValueError(f"Unsupported status for required check {check_name!r}: {status!r}.")
+            if status == "passed":
+                passed_requirements.append(check_name)
+            elif status == "failed":
+                failed_requirements.append(check_name)
+                failures.append(f"Required check {check_name!r} failed.")
+            elif status == "not_run":
+                not_run_requirements.append(check_name)
+                failures.append(f"Required check {check_name!r} was not run.")
+            else:
+                indeterminate_requirements.append(check_name)
+                failures.append(f"Required check {check_name!r} is indeterminate.")
+        evidence = summary.get("evidence", {})
+        if isinstance(evidence, list):
+            normalized_evidence: dict[str, dict[str, Any]] = {}
+            for item in evidence:
+                if not isinstance(item, dict) or not isinstance(item.get("evidence_type"), str):
+                    raise ValueError("evidence list entries must contain an evidence_type.")
+                evidence_type = item["evidence_type"]
+                if evidence_type in normalized_evidence:
+                    raise ValueError(f"Duplicate evidence result: {evidence_type}.")
+                normalized_evidence[evidence_type] = item
+            evidence = normalized_evidence
+        if not isinstance(evidence, dict):
+            raise ValueError("evidence must be a dictionary or list.")
+        for evidence_type in self.required_evidence:
+            item = evidence.get(evidence_type)
+            usable = isinstance(item, dict) and item.get("available") is True and item.get("sufficient") is True
+            if not usable:
+                failures.append(f"Required evidence {evidence_type!r} is missing or insufficient.")
+        comparisons = summary.get("comparisons", {})
+        if isinstance(comparisons, list):
+            normalized_comparisons: dict[str, dict[str, Any]] = {}
+            for item in comparisons:
+                if not isinstance(item, dict) or not isinstance(item.get("metric_name", item.get("metric")), str):
+                    raise ValueError("comparison list entries must contain a metric name.")
+                metric_name = item.get("metric_name", item.get("metric"))
+                if metric_name in normalized_comparisons:
+                    raise ValueError(f"Duplicate comparison result: {metric_name}.")
+                normalized_comparisons[metric_name] = item
+            comparisons = normalized_comparisons
+        if not isinstance(comparisons, dict):
+            raise ValueError("comparisons must be a dictionary or list.")
+        for requirement in self.required_comparisons:
+            metric = requirement["metric"]
+            comparison = comparisons.get(metric)
+            if not isinstance(comparison, dict):
+                failures.append(f"Required comparison {metric!r} is missing.")
+                continue
+            if comparison.get("status") in {"insufficient_evidence", "unsupported", "invalid"}:
+                failures.append(f"Required comparison {metric!r} is unresolved.")
+                continue
+            difference = comparison.get("difference")
+            if not isinstance(difference, (int, float)) or not math.isfinite(float(difference)):
+                failures.append(f"Required comparison {metric!r} has no valid difference.")
+                continue
+            direction = comparison.get("direction", "higher_is_better")
+            regression = -float(difference) if direction == "higher_is_better" else float(difference)
+            if requirement.get("max_regression") is not None and regression > float(requirement["max_regression"]):
+                failures.append(f"Comparison {metric!r} exceeds the permitted regression threshold.")
+            if requirement.get("min_improvement") is not None:
+                improvement = float(difference) if direction == "higher_is_better" else -float(difference)
+                if improvement < float(requirement["min_improvement"]):
+                    failures.append(f"Comparison {metric!r} does not meet the required improvement threshold.")
+        profile_result = summary.get("task_profile_result")
+        if self.required_task_profile is not None:
+            if not isinstance(profile_result, dict):
+                failures.append("Required task profile result is missing.")
+            elif profile_result.get("status") != "verified":
+                failures.append("Required task profile requirements are not verified.")
         if isinstance(binary_statistics, dict) and binary_statistics.get("status") != "valid":
             failures.append("Binary statistical result is insufficient; release is blocked.")
         if isinstance(binary_statistics, dict) and binary_statistics.get("status") == "valid":
@@ -208,11 +354,19 @@ class ReleasePolicy:
             "distribution_shift": distribution_shift,
             "failures": failures,
             "warnings": [] if self.block_on_issues else warnings,
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "passed_requirements": passed_requirements,
+            "failed_requirements": failed_requirements,
+            "not_run_requirements": not_run_requirements,
+            "indeterminate_requirements": indeterminate_requirements,
             "policy": self.to_dict(),
         }
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
             "max_risk_level": self.max_risk_level.upper(),
             "min_confidence_score": float(self.min_confidence_score),
             "min_dataset_quality": float(self.min_dataset_quality),
@@ -223,6 +377,11 @@ class ReleasePolicy:
             "confidence_level": float(self.confidence_level),
             "allowed_issues": list(self.allowed_issues),
             "block_on_issues": bool(self.block_on_issues),
+            "required_checks": list(self.required_checks),
+            "optional_checks": list(self.optional_checks),
+            "required_evidence": list(self.required_evidence),
+            "required_comparisons": [dict(item) for item in self.required_comparisons],
+            "required_task_profile": dict(self.required_task_profile) if self.required_task_profile is not None else None,
         }
 
 

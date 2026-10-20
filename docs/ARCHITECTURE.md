@@ -109,6 +109,18 @@ biased samples, label errors, or distribution shift. Statistical uncertainty
 and evidence sufficiency remain distinct from assurance status and release
 decisions.
 
+Statistical comparisons use the explicit `candidate - baseline` difference
+convention. Continuous comparisons support independent-sample normal
+approximations and paired percentile bootstrap only when stable unique
+identifiers establish the pairs; equal sample counts do not establish
+pairing. Binary comparisons reuse Wilson single-proportion results and use an
+explicit independent two-proportion approximation for the difference. A
+comparison records observed values, uncertainty, evidence adequacy,
+statistical support, metric direction, and practical thresholds separately.
+It does not authorize release, establish equivalence, or correct sampling
+bias, correlation, or distribution shift. Multiple-comparison correction is
+not implemented, so results do not claim family-wise error control.
+
 Research-Informed Assurance Validation (RIAV) compares normalized binary
 reference outcomes and assessments deterministically. It reports TP, FP, TN,
 and FN together with precision, recall, specificity, F1, and explicit

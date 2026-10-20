@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+from .comparison import compare_continuous
 from .dataset import EvaluationDataset, Sample
 
 
@@ -141,10 +142,17 @@ class EvaluationRunner:
             first_avg = sum(first_values) / len(first_values) if first_values else 0.0
             second_avg = sum(second_values) / len(second_values) if second_values else 0.0
             delta = second_avg - first_avg
+            comparison = compare_continuous(
+                first_values,
+                second_values,
+                metric_name=metric_name,
+                direction="higher_is_better",
+            )
             results[metric_name] = {
                 "baseline": first_avg,
                 "candidate": second_avg,
                 "delta": delta,
                 "delta_pct": ((delta / first_avg) * 100.0) if first_avg else 0.0,
+                "comparison": comparison.to_dict(),
             }
         return results

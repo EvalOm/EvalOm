@@ -11,6 +11,14 @@ from .agent_assurance import (
 )
 from .config import EvaluationConfig, QualityGate
 from .comparison import ComparisonResult, compare_binary, compare_continuous, validate_comparability
+from .task_profiles import (
+    ProfileRequirement,
+    ProfileResolution,
+    TaskProfile,
+    builtin_profile,
+    evaluate_profile,
+    resolve_profile,
+)
 from .continuous import ContinuousStatisticalResult, bootstrap_mean_interval
 from .dataset import EvaluationDataset, Sample
 from .evaluators import BaseEvaluator, ContainsEvaluator, ExactMatchEvaluator, MRREvaluator, NDCGEvaluator, NumericToleranceEvaluator, RegexEvaluator, RetrievalRecallEvaluator
@@ -77,6 +85,12 @@ __all__ = [
     "compare_binary",
     "compare_continuous",
     "validate_comparability",
+    "ProfileRequirement",
+    "ProfileResolution",
+    "TaskProfile",
+    "builtin_profile",
+    "evaluate_profile",
+    "resolve_profile",
     "ExperimentRecord",
     "ExperimentTracker",
     "EvidenceRecord",

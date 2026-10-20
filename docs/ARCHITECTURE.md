@@ -121,6 +121,16 @@ It does not authorize release, establish equivalence, or correct sampling
 bias, correlation, or distribution shift. Multiple-comparison correction is
 not implemented, so results do not claim family-wise error control.
 
+Declarative task profiles are data-only, versioned definitions of required
+and optional assurance requirements for `feature_implementation`, `bug_fix`,
+`test_generation`, and `code_review`. Profiles are validated strictly,
+resolved deterministically, and identified by a canonical definition hash.
+They reference only supported evaluators, metrics, and evidence categories;
+they cannot contain executable code, arbitrary imports, commands, or trusted
+filesystem paths. Missing, unavailable, or insufficient required evidence
+produces `insufficient_evidence`; failed required checks produce `failed`.
+Profile selection cannot override mandatory checks or manufacture evidence.
+
 Research-Informed Assurance Validation (RIAV) compares normalized binary
 reference outcomes and assessments deterministically. It reports TP, FP, TN,
 and FN together with precision, recall, specificity, F1, and explicit

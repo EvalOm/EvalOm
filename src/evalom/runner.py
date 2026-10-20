@@ -22,10 +22,16 @@ class EvaluationRunResult:
         return sum(float(item["score"]) for item in self.metrics) / len(self.metrics)
 
     def check_quality_gates(self) -> dict[str, Any]:
+        insufficient_metrics = [
+            item for item in self.metrics
+            if item.get("status") == "insufficient_evidence"
+        ]
+        failures: list[str] = [
+            f"{item['name']} has insufficient reference evidence."
+            for item in insufficient_metrics
+        ]
         if not self.quality_gates:
-            return {"passed": True, "failures": []}
-
-        failures: list[str] = []
+            return {"passed": not failures, "failures": failures}
         for metric_name, gate in self.quality_gates.items():
             metric_values = [item["score"] for item in self.metrics if item["name"] == metric_name]
             if not metric_values:
@@ -95,6 +101,7 @@ class EvaluationRunner:
                     "name": result["name"],
                     "score": result["score"],
                     "passed": result.get("passed", False),
+                    "status": result.get("status", "valid"),
                 })
 
             sample_results.append({
@@ -109,6 +116,7 @@ class EvaluationRunner:
                 "name": metric["name"],
                 "score": metric["score"],
                 "passed": metric["passed"],
+                "status": metric.get("status", "valid"),
             } for metric in evaluator_scores)
 
         result_metadata = dict(metadata or {})

@@ -8,7 +8,13 @@ import pytest
 
 from evalom.cli import init_command, run_command, verify_command
 from evalom.dataset import EvaluationDataset
-from evalom.evaluators import ContainsEvaluator, ExactMatchEvaluator, MRREvaluator, NDCGEvaluator
+from evalom.evaluators import (
+    ContainsEvaluator,
+    ExactMatchEvaluator,
+    MRREvaluator,
+    NDCGEvaluator,
+    RetrievalRecallEvaluator,
+)
 from evalom.experiment import ExperimentTracker
 from evalom.policy import ReleasePolicy
 from evalom.runner import EvaluationRunResult, EvaluationRunner
@@ -39,6 +45,51 @@ def test_exact_match_evaluator():
     result = evaluator.evaluate({"id": "1", "input": "Q", "expected_answer": "Paris"}, {"answer": "Paris", "contexts": []})
     assert result["score"] == 1.0
     assert result["passed"] is True
+
+
+def test_empty_exact_match_reference_is_valid_but_missing_reference_is_insufficient():
+    evaluator = ExactMatchEvaluator()
+    assert evaluator.evaluate(
+        {"id": "1", "input": "Q", "expected_answer": ""},
+        {"answer": ""},
+    )["passed"] is True
+    missing = evaluator.evaluate({"id": "1", "input": "Q"}, {"answer": ""})
+    assert missing["passed"] is False
+    assert missing["status"] == "insufficient_evidence"
+
+
+def test_empty_contains_configuration_is_not_a_pass():
+    result = ContainsEvaluator().evaluate({}, {"answer": "anything"})
+    assert result["passed"] is False
+    assert result["score"] == 0.0
+    assert result["status"] == "insufficient_evidence"
+    with pytest.raises(ValueError):
+        ContainsEvaluator(required_terms=[""])
+
+
+def test_retrieval_recall_requires_expected_context_reference():
+    result = RetrievalRecallEvaluator().evaluate({}, {"contexts": ["context"]})
+    assert result["passed"] is False
+    assert result["score"] == 0.0
+    assert result["status"] == "insufficient_evidence"
+
+
+def test_missing_ground_truth_fails_runner_quality_status_and_policy():
+    dataset = EvaluationDataset([{"id": "1", "input": "question"}])
+    result = EvaluationRunner(dataset, [ExactMatchEvaluator()]).run(lambda _: {"answer": ""})
+    assert result.metrics[0]["status"] == "insufficient_evidence"
+    assert result.check_quality_gates()["passed"] is False
+    assert "insufficient reference evidence" in result.summary()
+    decision = ReleasePolicy(min_confidence_score=0, min_dataset_quality=0, min_evaluator_reliability=0).evaluate({
+        "status": "insufficient_evidence",
+        "risk_level": "LOW",
+        "confidence_score": 100,
+        "dataset_quality": 1,
+        "evaluator_reliability": 1,
+        "statistical_confidence": 1,
+        "lower_confidence_bound": 1,
+    })
+    assert decision["decision"] == "BLOCK"
 
 
 def test_runner_summary():

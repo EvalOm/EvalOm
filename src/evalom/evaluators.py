@@ -15,7 +15,15 @@ class ExactMatchEvaluator(BaseEvaluator):
     name = "exact_match"
 
     def evaluate(self, sample: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
-        expected = str(sample.get("expected_answer") or "")
+        if "expected_answer" not in sample or sample["expected_answer"] is None:
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "reason": "Missing expected answer reference.",
+            }
+        expected = str(sample["expected_answer"])
         actual = str(output.get("answer") or "")
         normalized_expected = expected.strip().lower()
         normalized_actual = actual.strip().lower()
@@ -24,6 +32,7 @@ class ExactMatchEvaluator(BaseEvaluator):
             "name": self.name,
             "score": 1.0 if passed else 0.0,
             "passed": passed,
+            "status": "valid",
             "expected": expected,
             "actual": actual,
         }
@@ -33,10 +42,25 @@ class ContainsEvaluator(BaseEvaluator):
     name = "contains"
 
     def __init__(self, required_terms: list[str] | None = None):
+        if required_terms is not None and (
+            not isinstance(required_terms, list)
+            or any(not isinstance(term, str) or not term.strip() for term in required_terms)
+        ):
+            raise ValueError("required_terms must be a list of non-empty strings.")
         self.required_terms = required_terms or []
 
     def evaluate(self, sample: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
         actual = str(output.get("answer") or "")
+        if not self.required_terms:
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "terms": [],
+                "matched": [],
+                "reason": "No required terms were configured.",
+            }
         actual_lower = actual.lower()
         matched = []
         for term in self.required_terms:
@@ -48,6 +72,7 @@ class ContainsEvaluator(BaseEvaluator):
             "name": self.name,
             "score": (len(matched) / len(self.required_terms)) if self.required_terms else 1.0,
             "passed": passed,
+            "status": "valid",
             "terms": self.required_terms,
             "matched": matched,
         }
@@ -82,11 +107,28 @@ class NumericToleranceEvaluator(BaseEvaluator):
     def evaluate(self, sample: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
         expected = sample.get("expected_answer")
         actual = output.get("answer")
+        if expected is None:
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "expected": expected,
+                "actual": actual,
+                "reason": "Missing expected numeric reference.",
+            }
         try:
             expected_value = float(str(expected).strip())
             actual_value = float(str(actual).strip())
         except (TypeError, ValueError):
-            return {"name": self.name, "score": 0.0, "passed": False, "expected": expected, "actual": actual}
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "invalid",
+                "expected": expected,
+                "actual": actual,
+            }
 
         delta = abs(actual_value - expected_value)
         passed = delta <= self.tolerance
@@ -110,7 +152,14 @@ class RetrievalRecallEvaluator(BaseEvaluator):
         expected_contexts = list(sample.get("expected_context") or [])
         retrieved_contexts = list(output.get("contexts") or [])
         if not expected_contexts:
-            return {"name": self.name, "score": 1.0, "passed": True, "retrieved": retrieved_contexts[: self.k]}
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "retrieved": retrieved_contexts[: self.k],
+                "reason": "No expected relevant contexts were provided.",
+            }
 
         relevant = set(str(item) for item in expected_contexts)
         top_k = [str(item) for item in retrieved_contexts[: self.k]]
@@ -121,6 +170,7 @@ class RetrievalRecallEvaluator(BaseEvaluator):
             "name": self.name,
             "score": score,
             "passed": passed,
+            "status": "valid",
             "hits": hits,
             "expected": list(relevant),
             "retrieved": top_k,
@@ -137,7 +187,14 @@ class MRREvaluator(BaseEvaluator):
         expected_contexts = {str(item) for item in (sample.get("expected_context") or [])}
         retrieved_contexts = [str(item) for item in (output.get("contexts") or [])[: self.k]]
         if not expected_contexts:
-            return {"name": self.name, "score": 1.0, "passed": True, "rank": 0}
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "rank": None,
+                "reason": "No expected relevant contexts were provided.",
+            }
 
         for rank, item in enumerate(retrieved_contexts, start=1):
             if item in expected_contexts:
@@ -156,7 +213,13 @@ class NDCGEvaluator(BaseEvaluator):
         expected_contexts = {str(item) for item in (sample.get("expected_context") or [])}
         retrieved_contexts = [str(item) for item in (output.get("contexts") or [])[: self.k]]
         if not expected_contexts:
-            return {"name": self.name, "score": 1.0, "passed": True}
+            return {
+                "name": self.name,
+                "score": 0.0,
+                "passed": False,
+                "status": "insufficient_evidence",
+                "reason": "No expected relevant contexts were provided.",
+            }
 
         dcg = 0.0
         for idx, item in enumerate(retrieved_contexts, start=1):

@@ -4,6 +4,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .statistical import BinaryStatisticalResult, calculate_binary_statistics
+
 
 _BINARY_REFERENCE_ALIASES = {
     "correct": "correct",
@@ -221,6 +223,26 @@ class GroundTruthComparisonResult:
         }
 
 
+@dataclass(frozen=True)
+class RIAVEvaluationResult:
+    status: str
+    comparisons: tuple[GroundTruthComparisonResult, ...]
+    confusion_matrix: "ConfusionMatrixMetrics"
+    binary_statistics: BinaryStatisticalResult
+    evaluated_cases: int
+    insufficient_cases: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "comparisons": [comparison.to_dict() for comparison in self.comparisons],
+            "confusion_matrix": self.confusion_matrix.to_dict(),
+            "binary_statistics": self.binary_statistics.to_dict(),
+            "evaluated_cases": self.evaluated_cases,
+            "insufficient_cases": self.insufficient_cases,
+        }
+
+
 def compare_assessment_to_reference(
     reference: Any,
     assessment: Any,
@@ -302,6 +324,8 @@ class ConfusionMatrixMetrics:
         recall_denom = self.tp + self.fn
         false_positive_denom = self.fp + self.tn
         false_negative_denom = self.fn + self.tp
+        specificity_denom = self.tn + self.fp
+        f1_denom = 2 * self.tp + self.fp + self.fn
         accuracy_denom = self.total_eligible_cases
 
         return {
@@ -314,6 +338,8 @@ class ConfusionMatrixMetrics:
             "exclusion_reasons": dict(self.exclusion_reasons),
             "precision": _safe_ratio(self.tp, precision_denom),
             "recall": _safe_ratio(self.tp, recall_denom),
+            "specificity": _safe_ratio(self.tn, specificity_denom),
+            "f1": _safe_ratio(2 * self.tp, f1_denom),
             "false_positive_rate": _safe_ratio(self.fp, false_positive_denom),
             "false_negative_rate": _safe_ratio(self.fn, false_negative_denom),
             "accuracy": _safe_ratio(self.tp + self.tn, accuracy_denom),
@@ -321,6 +347,8 @@ class ConfusionMatrixMetrics:
             "metric_denominators": {
                 "precision": precision_denom,
                 "recall": recall_denom,
+                "specificity": specificity_denom,
+                "f1": f1_denom,
                 "false_positive_rate": false_positive_denom,
                 "false_negative_rate": false_negative_denom,
                 "accuracy": accuracy_denom,
@@ -398,6 +426,62 @@ def compute_confusion_matrix_metrics(
     return metrics
 
 
+def evaluate_reference_outcomes(
+    references: Iterable[Any],
+    assessments: Iterable[Any],
+    *,
+    identifiers: Iterable[Any] | None = None,
+    provenances: Iterable[str | None] | None = None,
+    confidence_level: float = 0.95,
+) -> RIAVEvaluationResult:
+    """Compare aligned outcomes and attach binary uncertainty metadata."""
+    reference_values = list(references)
+    assessment_values = list(assessments)
+    if len(reference_values) != len(assessment_values):
+        raise ValueError("references and assessments must be the same length.")
+    identifier_values = list(identifiers) if identifiers is not None else None
+    if identifier_values is not None:
+        if len(identifier_values) != len(reference_values):
+            raise ValueError("identifiers must match the outcome length.")
+        normalized_ids = [str(identifier) for identifier in identifier_values]
+        if len(normalized_ids) != len(set(normalized_ids)):
+            raise ValueError("identifiers must be unique.")
+    provenance_values = list(provenances) if provenances is not None else None
+    if provenance_values is not None and len(provenance_values) != len(reference_values):
+        raise ValueError("provenances must match the outcome length.")
+
+    comparisons = tuple(
+        compare_assessment_to_reference(
+            reference,
+            assessment,
+            provenance=provenance_values[index] if provenance_values is not None else None,
+        )
+        for index, (reference, assessment) in enumerate(zip(reference_values, assessment_values))
+    )
+    metrics = compute_confusion_matrix_metrics(reference_values, assessment_values)
+    eligible = metrics.total_eligible_cases
+    binary = calculate_binary_statistics(
+        metrics.tp + metrics.tn,
+        eligible,
+        confidence_level=confidence_level,
+    )
+    insufficient = sum(comparison.status == "unverified" for comparison in comparisons)
+    if not comparisons or insufficient:
+        status = "insufficient_evidence"
+    elif all(comparison.match for comparison in comparisons):
+        status = "verified"
+    else:
+        status = "failed"
+    return RIAVEvaluationResult(
+        status=status,
+        comparisons=comparisons,
+        confusion_matrix=metrics,
+        binary_statistics=binary,
+        evaluated_cases=eligible,
+        insufficient_cases=insufficient,
+    )
+
+
 def calculate_confusion_matrix_metrics(reference_labels: Iterable[Any], decisions: Iterable[Any]) -> ConfusionMatrixMetrics:
     return compute_confusion_matrix_metrics(reference_labels, decisions)
 
@@ -424,10 +508,12 @@ __all__ = [
     "ReferenceOutcome",
     "EvalOmAssessment",
     "GroundTruthComparisonResult",
+    "RIAVEvaluationResult",
     "ConfusionMatrixMetrics",
     "compare_assessment_to_reference",
     "compare_ground_truth",
     "assess_ground_truth",
+    "evaluate_reference_outcomes",
     "compute_confusion_matrix_metrics",
     "calculate_confusion_matrix_metrics",
     "normalize_reference_label",

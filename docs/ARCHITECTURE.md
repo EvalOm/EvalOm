@@ -109,6 +109,18 @@ biased samples, label errors, or distribution shift. Statistical uncertainty
 and evidence sufficiency remain distinct from assurance status and release
 decisions.
 
+Research-Informed Assurance Validation (RIAV) compares normalized binary
+reference outcomes and assessments deterministically. It reports TP, FP, TN,
+and FN together with precision, recall, specificity, F1, and explicit
+denominators; undefined zero-denominator metrics are `null`, not perfect
+scores. Missing or unverified outcomes are counted as exclusions and produce
+`insufficient_evidence`, while malformed labels are rejected. RIAV attaches
+the shared Wilson statistical result to the eligible correctness proportion;
+this uncertainty estimate remains distinct from correctness, evidence
+sufficiency, and release policy. The comparison contract assumes aligned,
+independent records and does not correct label error, correlation, sampling
+bias, or distribution shift.
+
 ## API contract
 
 - `GET /healthz`: process health, independent of database availability.

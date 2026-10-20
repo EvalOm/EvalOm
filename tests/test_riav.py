@@ -1,6 +1,11 @@
 import pytest
 
-from evalom.riav import ConfusionMatrixMetrics, compare_assessment_to_reference, compute_confusion_matrix_metrics
+from evalom.riav import (
+    ConfusionMatrixMetrics,
+    compare_assessment_to_reference,
+    compute_confusion_matrix_metrics,
+    evaluate_reference_outcomes,
+)
 
 
 def test_ground_truth_comparison_matches_when_in_sync():
@@ -77,3 +82,43 @@ def test_empty_input_returns_empty_metrics():
 def test_invalid_decision_combinations_are_rejected():
     with pytest.raises(ValueError):
         compute_confusion_matrix_metrics(["correct"], ["maybe"])  # invalid state should be rejected
+
+
+def test_integrated_riav_result_reuses_binary_statistics_and_reconciles_counts():
+    result = evaluate_reference_outcomes(
+        ["defective", "defective", "correct", "correct"],
+        ["defective", "correct", "correct", "defective"],
+        identifiers=["a", "b", "c", "d"],
+    )
+
+    assert result.status == "failed"
+    assert result.evaluated_cases == 4
+    assert result.insufficient_cases == 0
+    assert result.confusion_matrix.to_dict()["tp"] == 1
+    assert result.confusion_matrix.to_dict()["tn"] == 1
+    assert result.confusion_matrix.to_dict()["specificity"] == 0.5
+    assert result.confusion_matrix.to_dict()["f1"] == 0.5
+    assert result.binary_statistics.successes == 2
+    assert result.binary_statistics.failures == 2
+    assert result.binary_statistics.status == "valid"
+    assert result.to_dict()["binary_statistics"]["method"] == "wilson_score"
+
+
+def test_integrated_riav_marks_missing_references_insufficient_and_not_pass():
+    result = evaluate_reference_outcomes(
+        ["correct", None],
+        ["correct", "correct"],
+        identifiers=["a", "b"],
+    )
+
+    assert result.status == "insufficient_evidence"
+    assert result.insufficient_cases == 1
+    assert result.binary_statistics.total_observations == 1
+    assert result.binary_statistics.successes == 1
+
+
+def test_integrated_riav_rejects_mismatched_or_duplicate_inputs():
+    with pytest.raises(ValueError):
+        evaluate_reference_outcomes(["correct"], ["correct", "defective"])
+    with pytest.raises(ValueError):
+        evaluate_reference_outcomes(["correct", "defective"], ["correct", "defective"], identifiers=["x", "x"])

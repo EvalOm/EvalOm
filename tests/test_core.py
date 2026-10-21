@@ -1,5 +1,8 @@
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from argparse import Namespace
 from pathlib import Path
@@ -903,6 +906,62 @@ def test_verify_command_exits_zero_when_policy_allows(tmp_path: Path, capsys):
 
     assert exit_code == 0
     assert output["policy_decision"]["decision"] == "ALLOW"
+
+
+def test_cli_subprocess_json_and_error_exit_codes(tmp_path: Path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text(
+        "project:\n"
+        "  name: demo\n"
+        "dataset:\n"
+        "  path: data.jsonl\n"
+        "evaluators:\n"
+        "  - name: exact_match\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "data.jsonl").write_text(
+        '{"id":"1","input":"capital","expected_answer":"Paris"}\n',
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    completed = subprocess.run(
+        [sys.executable, "-m", "evalom", "run", str(config_path), "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout)["dataset"]["name"] == "data"
+    assert completed.stderr == ""
+
+    missing = subprocess.run(
+        [sys.executable, "-m", "evalom", "report", str(tmp_path / "missing.json")],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert missing.returncode == 2
+    assert "error:" in missing.stderr
+    assert missing.stdout == ""
+
+
+def test_profile_cli_outputs_json(tmp_path: Path):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    completed = subprocess.run(
+        [sys.executable, "-m", "evalom", "profile", "--task-type", "bug_fix", "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["task_type"] == "bug_fix"
+    assert len(payload["definition_hash"]) == 64
 
 
 def test_experiment_tracker_load_handles_empty_file(tmp_path: Path):

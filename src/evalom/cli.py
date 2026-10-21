@@ -16,8 +16,45 @@ from .policy import evaluate_verification_policy
 from .reports import generate_json_report, write_html_report, write_json_report
 from .runner import EvaluationRunResult, EvaluationRunner
 from .storage import SQLiteExperimentStore
+from .task_profiles import TaskProfile, builtin_profile, resolve_profile
 from .verification import VerificationEngine
 
+EXIT_OK = 0
+EXIT_ASSURANCE_FAILURE = 1
+EXIT_INVALID_INPUT = 2
+EXIT_RUNTIME_ERROR = 4
+
+
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _load_report(path: str | Path) -> tuple[dict[str, Any], EvaluationRunResult]:
+    report_path = Path(path)
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Report is not valid JSON: {report_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Report must be a JSON object.")
+    dataset = payload.get("dataset")
+    if not isinstance(dataset, dict) or not all(
+        key in dataset for key in ("name", "version", "samples")
+    ):
+        raise ValueError("Report dataset must contain name, version, and samples.")
+    metrics = payload.get("metrics", [])
+    sample_results = payload.get("sample_results", [])
+    if not isinstance(metrics, list) or not isinstance(sample_results, list):
+        raise ValueError("Report metrics and sample_results must be lists.")
+    return payload, EvaluationRunResult(
+        dataset_name=dataset["name"],
+        dataset_version=dataset["version"],
+        total_samples=dataset["samples"],
+        metrics=metrics,
+        sample_results=sample_results,
+        quality_gates=payload.get("quality_gates", {}),
+        metadata=payload.get("metadata", {}),
+    )
 
 def init_command(args: argparse.Namespace) -> int:
     project_dir = Path(args.project_dir)
@@ -85,11 +122,18 @@ def run_command(args: argparse.Namespace) -> int:
         result.metadata["verification"] = verification.to_dict()
         result.metadata["policy_decision"] = policy_status
 
-    print(result.summary())
+    if getattr(args, "json", False):
+        output = generate_json_report(result)
+        _print_json(output)
+    else:
+        print(result.summary())
     if policy_status is not None:
-        print(f"Release policy: {policy_status['decision']}")
-        for failure in policy_status["failures"]:
-            print(f"- {failure}")
+        if getattr(args, "json", False):
+            pass
+        else:
+            print(f"Release policy: {policy_status['decision']}")
+            for failure in policy_status["failures"]:
+                print(f"- {failure}")
 
     experiment_store_path = getattr(args, "experiment_store", None)
     if experiment_store_path:
@@ -118,56 +162,36 @@ def run_command(args: argparse.Namespace) -> int:
             },
             workspace_id=os.environ.get("EVALOM_DEFAULT_WORKSPACE", "default"),
         )
-        print(f"Experiment stored with ID {record['id']}")
+        message = f"Experiment stored with ID {record['id']}"
+        if getattr(args, "json", False):
+            print(message, file=os.sys.stderr)
+        else:
+            print(message)
     if args.output:
         output_path = Path(args.output)
         write_json_report(result, output_path)
-        print(f"JSON report written to {output_path}")
+        print(f"JSON report written to {output_path}", file=os.sys.stderr if getattr(args, "json", False) else os.sys.stdout)
     if args.html_output:
         html_path = Path(args.html_output)
         write_html_report(result, html_path)
-        print(f"HTML report written to {html_path}")
+        print(f"HTML report written to {html_path}", file=os.sys.stderr if getattr(args, "json", False) else os.sys.stdout)
     if policy_status is not None and not policy_status["passed"]:
-        return 1
-    if not quality_status["passed"] and getattr(args, "fail_on_regression", False):
-        return 1
-    return 0 if quality_status["passed"] else 0
+        return EXIT_ASSURANCE_FAILURE
+    if not quality_status["passed"]:
+        return EXIT_ASSURANCE_FAILURE
+    return EXIT_OK
 
 
 def compare_command(args: argparse.Namespace) -> int:
-    first = json.loads(Path(args.first).read_text(encoding="utf-8"))
-    second = json.loads(Path(args.second).read_text(encoding="utf-8"))
-    first_result = EvaluationRunResult(
-        dataset_name=first["dataset"]["name"],
-        dataset_version=first["dataset"]["version"],
-        total_samples=first["dataset"]["samples"],
-        metrics=first["metrics"],
-        sample_results=first["sample_results"],
-        quality_gates=first.get("quality_gates", {}),
-    )
-    second_result = EvaluationRunResult(
-        dataset_name=second["dataset"]["name"],
-        dataset_version=second["dataset"]["version"],
-        total_samples=second["dataset"]["samples"],
-        metrics=second["metrics"],
-        sample_results=second["sample_results"],
-        quality_gates=second.get("quality_gates", {}),
-    )
+    _, first_result = _load_report(args.first)
+    _, second_result = _load_report(args.second)
     comparison = EvaluationRunner.compare_runs(first_result, second_result)
-    print(json.dumps(comparison, indent=2, sort_keys=True))
-    return 0
+    _print_json(comparison)
+    return EXIT_OK
 
 
 def report_command(args: argparse.Namespace) -> int:
-    payload = json.loads(Path(args.report).read_text(encoding="utf-8"))
-    result = EvaluationRunResult(
-        dataset_name=payload["dataset"]["name"],
-        dataset_version=payload["dataset"]["version"],
-        total_samples=payload["dataset"]["samples"],
-        metrics=payload["metrics"],
-        sample_results=payload["sample_results"],
-        quality_gates=payload.get("quality_gates", {}),
-    )
+    _, result = _load_report(args.report)
     if args.format == "json":
         print(json.dumps(generate_json_report(result), indent=2, sort_keys=True))
     elif args.format == "html":
@@ -211,16 +235,7 @@ def _load_policy_file(path: str | None) -> dict[str, Any] | None:
 
 
 def verify_command(args: argparse.Namespace) -> int:
-    report_path = Path(args.report)
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
-    result = EvaluationRunResult(
-        dataset_name=payload["dataset"]["name"],
-        dataset_version=payload["dataset"]["version"],
-        total_samples=payload["dataset"]["samples"],
-        metrics=payload.get("metrics", []),
-        sample_results=payload.get("sample_results", []),
-        quality_gates=payload.get("quality_gates", {}),
-    )
+    payload, result = _load_report(args.report)
     verification = VerificationEngine().verify(result)
 
     policy = _load_policy_file(getattr(args, "policy", None))
@@ -231,8 +246,28 @@ def verify_command(args: argparse.Namespace) -> int:
 
     print(json.dumps(out, indent=2, sort_keys=True))
     if policy is not None and not policy_result["passed"]:
-        return 1
-    return 0
+        return EXIT_ASSURANCE_FAILURE
+    return EXIT_OK
+
+
+def profile_command(args: argparse.Namespace) -> int:
+    if args.task_type:
+        profile = builtin_profile(args.task_type)
+    else:
+        payload = json.loads(Path(args.profile).read_text(encoding="utf-8"))
+        profile = TaskProfile.from_dict(payload)
+    resolved = resolve_profile(profile)
+    output = profile.to_dict()
+    output["definition_hash"] = profile.definition_hash
+    output["resolution"] = resolved.to_dict()
+    if args.json:
+        _print_json(output)
+    else:
+        print(f"{profile.profile_id} {profile.profile_version} ({profile.task_type})")
+        print(f"Definition hash: {profile.definition_hash}")
+        print(f"Required checks: {len(resolved.required)}")
+        print(f"Optional checks: {len(resolved.optional)}")
+    return EXIT_OK
 
 
 def version_command(args: argparse.Namespace) -> int:
@@ -261,6 +296,7 @@ def main() -> int:
     run_parser.add_argument("--html-output", default=None, help="Optional HTML report path")
     run_parser.add_argument("--experiment-store", default=None, help="Optional SQLite path for saving this run")
     run_parser.add_argument("--fail-on-regression", action="store_true", help="Exit with status 1 if a configured quality gate fails")
+    run_parser.add_argument("--json", action="store_true", help="Write the report as JSON to stdout")
     run_parser.set_defaults(func=run_command)
 
     compare_parser = subparsers.add_parser("compare", help="Compare two evaluation reports")
@@ -288,11 +324,25 @@ def main() -> int:
     verify_parser.add_argument("--policy", default=None, help="Path to a JSON/YAML release policy to evaluate against")
     verify_parser.set_defaults(func=verify_command)
 
+    profile_parser = subparsers.add_parser("profile", help="Inspect a declarative task profile")
+    profile_source = profile_parser.add_mutually_exclusive_group(required=True)
+    profile_source.add_argument("--task-type", choices=["feature_implementation", "bug_fix", "test_generation", "code_review"])
+    profile_source.add_argument("--file", dest="profile", help="Path to a JSON task profile")
+    profile_parser.add_argument("--json", action="store_true", help="Write profile data as JSON")
+    profile_parser.set_defaults(func=profile_command)
+
     version_parser = subparsers.add_parser("version", help="Print version")
     version_parser.set_defaults(func=version_command)
 
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        print(f"error: {exc}", file=os.sys.stderr)
+        return EXIT_INVALID_INPUT
+    except OSError as exc:
+        print(f"error: {exc}", file=os.sys.stderr)
+        return EXIT_RUNTIME_ERROR
 
 
 if __name__ == "__main__":

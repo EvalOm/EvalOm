@@ -50,6 +50,40 @@ EVALOM_TEST_POSTGRES_DSN="postgresql://evalom:evalom@127.0.0.1:5432/evalom" \
 
 The integration test is skipped unless `EVALOM_TEST_POSTGRES_DSN` is set. Interactive API docs are available at `/docs`.
 
+## Python and CLI interface
+
+The package-level interface exposes the stable domain objects for local use:
+
+```python
+from evalom import EvaluationDataset, EvaluationRunner, ExactMatchEvaluator
+
+dataset = EvaluationDataset.from_jsonl("datasets/demo.jsonl")
+result = EvaluationRunner(dataset, [ExactMatchEvaluator()]).run(
+    lambda prompt: {"answer": "Paris", "contexts": []}
+)
+print(result.to_dict())
+```
+
+The CLI supports local evaluation, report inspection, comparison, policy
+verification, and declarative profile inspection:
+
+```bash
+evalom run eval.yaml --json > report.json
+evalom report report.json --format json
+evalom compare baseline.json candidate.json
+evalom verify report.json --policy release-policy.yaml
+evalom profile --task-type feature_implementation --json
+```
+
+`--json` writes machine-readable data to stdout; diagnostics and file-write
+messages are written to stderr. `evalom verify` and `run` return `0` when
+the requested operation and configured gates allow, `1` when assurance or
+quality requirements fail, `2` for invalid arguments, configuration, or
+input files, and `4` for runtime or infrastructure errors. A successful
+command invocation and an `ALLOW` release decision are separate concepts.
+The CLI uses configured paths exactly and does not search other directories
+when a dataset or report is missing.
+
 ## API authentication and workspaces
 
 The API keeps unauthenticated local-development behavior when no admin key is configured. Do not expose that mode to a network or use it for shared data. To enable bearer API-key authentication, configure a high-entropy bootstrap key (at least 32 characters) before starting the API:

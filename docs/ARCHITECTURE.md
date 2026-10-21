@@ -26,6 +26,26 @@ The Python package remains the evaluation engine. The CLI and API are separate a
 - `storage.py` owns SQLite schema initialization and experiment persistence.
 - `api.py` validates HTTP input, enforces bearer-key authentication and workspace roles when configured, exposes versioned routes, and translates missing records/storage failures into HTTP responses.
 - `reports.py` remains responsible for report rendering.
+
+## Reporting and experiment metadata
+
+JSON reports use schema version `1.0` and retain the existing dataset,
+metric, sample-result, quality-gate, and metadata fields. Imported reports
+are validated before CLI comparison or verification; unsupported versions,
+malformed required fields, and non-finite numbers are rejected. JSON file
+exports use a sibling temporary file and atomic replacement, while HTML is
+intended for human inspection and does not alter an assurance decision.
+
+Reports may carry run and report identifiers, verification/policy results,
+uncertainty, limitations, and comparison metadata. Missing or undefined
+metrics are displayed as missing rather than as zero. A policy `BLOCK` and
+mandatory failures remain visible in both machine-readable metadata and
+human-readable output.
+
+Experiment metadata fingerprints canonicalize JSON metadata and exclude
+fields whose names indicate secrets (for example tokens, passwords, and API
+keys). This supports comparison and reproduction checks without exporting
+credentials; it is not proof that an experiment or report is correct.
 - `cli.py` remains useful for local and CI execution; it should call shared domain/storage interfaces rather than embed server behavior.
 
 Assurance results use `verified`, `failed`, and `insufficient_evidence` as

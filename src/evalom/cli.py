@@ -13,7 +13,7 @@ from .dataset import EvaluationDataset
 from .evaluators import build_evaluator
 from .experiment import ExperimentRecord, ExperimentTracker
 from .policy import evaluate_verification_policy
-from .reports import generate_json_report, write_html_report, write_json_report
+from .reports import generate_json_report, validate_report, write_html_report, write_json_report
 from .runner import EvaluationRunResult, EvaluationRunner
 from .storage import SQLiteExperimentStore
 from .task_profiles import TaskProfile, builtin_profile, resolve_profile
@@ -35,8 +35,7 @@ def _load_report(path: str | Path) -> tuple[dict[str, Any], EvaluationRunResult]
         payload = json.loads(report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Report is not valid JSON: {report_path}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Report must be a JSON object.")
+    validate_report(payload)
     dataset = payload.get("dataset")
     if not isinstance(dataset, dict) or not all(
         key in dataset for key in ("name", "version", "samples")

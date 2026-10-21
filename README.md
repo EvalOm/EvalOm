@@ -255,6 +255,23 @@ Configured metric quality gates also fail when an evaluation produces no scores 
 
 API verification reports can be linked to an existing experiment by passing its ID as `experiment_id` in the request. Reports can be queried by experiment or policy result, for example `GET /api/v1/verification?experiment_id=<id>&decision=BLOCK`. Existing SQLite databases are upgraded automatically when the policy-decision field is added.
 
+### Report format and experiment metadata
+
+Generated JSON reports use schema version `1.0` and include the dataset,
+metrics, sample results, quality gates, and metadata used by the existing
+Python, CLI, and API interfaces. The CLI validates imported reports and
+rejects unsupported versions, malformed required fields, and non-finite
+numbers. JSON exports are written atomically; HTML reports are a
+human-readable presentation of the same decision and do not change it.
+
+Reports preserve verification, release-policy, uncertainty, limitation, and
+comparison metadata when supplied. Missing or undefined metrics are shown as
+missing, not as zero, and mandatory `BLOCK` reasons remain visible.
+Experiment metadata can include run/report identifiers and a deterministic
+metadata fingerprint. Fingerprints exclude fields that look like credentials
+or secrets, but a fingerprint is not evidence that a run is correct or
+fully reproducible.
+
 ## Product status
 
 The package currently provides the local evaluation runner, dataset validation, retrieval metrics, experiment tracking, quality gates, JSON/HTML reports, a verification engine, persisted verification reports, and a lightweight release policy engine for gating deployment decisions. The API is intended for local or single-instance use; it is not yet suitable for exposure as a shared or public service. Authentication, authorization, PostgreSQL support, dataset version hashing, and collaborative review remain future work.

@@ -30,7 +30,8 @@ from .evidence import (
     register_reference_evidence,
 )
 from .policy import ReleasePolicy, evaluate_verification_policy
-from .reports import generate_html_report, generate_json_report
+from .reports import REPORT_SCHEMA_VERSION, generate_html_report, generate_json_report, validate_report
+from .experiment import metadata_fingerprint
 from .riav import (
     AssessmentStatus,
     ConfusionMatrixMetrics,
@@ -115,6 +116,9 @@ __all__ = [
     "normalize_assessment_decision",
     "generate_json_report",
     "generate_html_report",
+    "validate_report",
+    "REPORT_SCHEMA_VERSION",
+    "metadata_fingerprint",
     "EvaluationImportLayer",
     "LangfuseAdapter",
     "LangSmithAdapter",

@@ -18,7 +18,7 @@ from evalom.evaluators import (
     NDCGEvaluator,
     RetrievalRecallEvaluator,
 )
-from evalom.experiment import ExperimentTracker
+from evalom.experiment import ExperimentTracker, metadata_fingerprint
 from evalom.policy import ReleasePolicy
 from evalom.runner import EvaluationRunResult, EvaluationRunner
 from evalom.api import create_app
@@ -147,6 +147,25 @@ def test_retrieval_metrics_and_experiment_tracking():
     record = tracker.record({"name": "exp-001", "model": "gpt-4o"})
     assert record["name"] == "exp-001"
     assert tracker.list()[0]["model"] == "gpt-4o"
+
+
+def test_report_schema_validation_and_atomic_export(tmp_path: Path):
+    from evalom.reports import REPORT_SCHEMA_VERSION, validate_report, write_json_report
+
+    payload = {"dataset": {"name": "d", "version": "1", "samples": 1},
+               "metrics": [], "sample_results": []}
+    assert validate_report(payload)["dataset"]["name"] == "d"
+    assert metadata_fingerprint({"b": 2, "a": 1, "api_token": "one"}) == metadata_fingerprint(
+        {"a": 1, "b": 2, "api_token": "two"}
+    )
+    with pytest.raises(ValueError, match="Unsupported report schema_version"):
+        validate_report({**payload, "schema_version": "9.0"})
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_report({**payload, "metrics": [{"score": float("nan")}]})
+
+    destination = tmp_path / "report.json"
+    write_json_report(EvaluationRunResult("d", "1", 1), destination)
+    assert json.loads(destination.read_text())["schema_version"] == REPORT_SCHEMA_VERSION
 
 
 def test_quality_gate_regression_detection():

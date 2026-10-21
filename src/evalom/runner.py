@@ -60,6 +60,13 @@ class EvaluationRunResult:
         if quality["failures"]:
             lines.append("Quality gate failures:")
             lines.extend(f"- {failure}" for failure in quality["failures"])
+        policy = self.metadata.get("policy_decision")
+        if isinstance(policy, dict):
+            lines.append(f"Release policy: {policy.get('decision', 'UNKNOWN')}")
+            lines.extend(f"- {failure}" for failure in policy.get("failures", []))
+        verification = self.metadata.get("verification")
+        if isinstance(verification, dict):
+            lines.append(f"Assurance status: {verification.get('status', 'unknown')}")
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:

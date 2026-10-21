@@ -964,6 +964,50 @@ def test_profile_cli_outputs_json(tmp_path: Path):
     assert len(payload["definition_hash"]) == 64
 
 
+def test_api_exposes_profiles_and_existing_comparison_engine(tmp_path: Path):
+    client = TestClient(create_app(database_path=tmp_path / "api.db"))
+
+    profile = client.get("/api/v1/task-profiles/bug_fix")
+    assert profile.status_code == 200
+    assert profile.json()["task_type"] == "bug_fix"
+    assert len(profile.json()["definition_hash"]) == 64
+
+    continuous = client.post(
+        "/api/v1/comparisons/continuous",
+        json={"baseline": [1] * 50, "candidate": [2] * 50, "resamples": 50},
+    )
+    assert continuous.status_code == 200
+    assert continuous.json()["difference"] == 1.0
+
+    binary = client.post(
+        "/api/v1/comparisons/binary",
+        json={
+            "baseline_successes": 50,
+            "baseline_total": 100,
+            "candidate_successes": 60,
+            "candidate_total": 100,
+        },
+    )
+    assert binary.status_code == 200
+    assert binary.json()["difference"] == pytest.approx(0.1)
+
+
+def test_api_rejects_invalid_comparison_and_unknown_profile(tmp_path: Path):
+    client = TestClient(create_app(database_path=tmp_path / "api.db"))
+    assert client.get("/api/v1/task-profiles/unknown").status_code == 404
+    invalid = client.post(
+        "/api/v1/comparisons/continuous",
+        json={"baseline": [1], "candidate": [2], "paired": True},
+    )
+    assert invalid.status_code == 422
+
+    oversized = client.post(
+        "/api/v1/verification",
+        json={"records": [{}] * 10_001},
+    )
+    assert oversized.status_code == 422
+
+
 def test_experiment_tracker_load_handles_empty_file(tmp_path: Path):
     tracker_path = tmp_path / "tracker.json"
     tracker_path.write_text("", encoding="utf-8")

@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 
 from .adapters import EvaluationImportLayer
 from .policy import evaluate_verification_policy
+from .comparison import compare_binary, compare_continuous
 from .runner import EvaluationRunResult
 from .storage import SQLiteExperimentStore, create_experiment_store
+from .task_profiles import builtin_profile, resolve_profile
 from .verification import VerificationEngine
 from . import __version__
 
@@ -46,7 +48,7 @@ class ExperimentUpdate(BaseModel):
 
 
 class VerificationRequest(BaseModel):
-    records: list[dict[str, Any]] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=10_000)
     dataset_name: str = "unknown"
     dataset_version: str = "v1"
     experiment_id: str | None = None
@@ -54,6 +56,33 @@ class VerificationRequest(BaseModel):
     evaluator_agreement: float | None = None
     human_agreement: float | None = None
     policy: dict[str, Any] | None = None
+
+
+class ContinuousComparisonRequest(BaseModel):
+    baseline: list[float] = Field(min_length=1, max_length=10_000)
+    candidate: list[float] = Field(min_length=1, max_length=10_000)
+    metric_name: str = Field(default="metric", min_length=1, max_length=200)
+    direction: Literal["higher_is_better", "lower_is_better", "none"] = "higher_is_better"
+    paired: bool = False
+    baseline_ids: list[str] | None = Field(default=None, max_length=10_000)
+    candidate_ids: list[str] | None = Field(default=None, max_length=10_000)
+    confidence_level: float = 0.95
+    resamples: int = Field(default=1000, ge=1, le=10_000)
+    seed: int | None = 0
+    minimum_sample_size: int | None = Field(default=None, ge=0)
+    practical_threshold: float | None = Field(default=None, ge=0)
+
+
+class BinaryComparisonRequest(BaseModel):
+    baseline_successes: int = Field(ge=0)
+    baseline_total: int = Field(ge=0)
+    candidate_successes: int = Field(ge=0)
+    candidate_total: int = Field(ge=0)
+    metric_name: str = Field(default="binary_metric", min_length=1, max_length=200)
+    direction: Literal["higher_is_better", "lower_is_better", "none"] = "higher_is_better"
+    confidence_level: float = 0.95
+    minimum_sample_size: int | None = Field(default=None, ge=0)
+    practical_threshold: float | None = Field(default=None, ge=0)
 
 
 class VerificationSummaryResponse(BaseModel):
@@ -305,6 +334,73 @@ def create_app(
         except Exception as error:
             raise HTTPException(status_code=503, detail="Experiment storage unavailable") from error
         return {"status": "ready"}
+
+    @app.get("/api/v1/task-profiles/{task_type}", tags=["profiles"])
+    def inspect_task_profile(
+        task_type: str,
+        identity: dict[str, str] = Depends(get_identity),
+    ) -> dict[str, Any]:
+        del identity
+        try:
+            profile = builtin_profile(task_type)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        resolved = resolve_profile(profile)
+        payload = profile.to_dict()
+        payload["definition_hash"] = profile.definition_hash
+        payload["resolution"] = resolved.to_dict()
+        return payload
+
+    @app.post("/api/v1/comparisons/continuous", tags=["comparisons"])
+    def compare_continuous_endpoint(
+        payload: ContinuousComparisonRequest,
+        identity: dict[str, str] = Depends(get_identity),
+    ) -> dict[str, Any]:
+        del identity
+        if payload.paired and (
+            payload.baseline_ids is None or payload.candidate_ids is None
+        ):
+            raise HTTPException(status_code=422, detail="Paired comparisons require baseline_ids and candidate_ids.")
+        try:
+            result = compare_continuous(
+                payload.baseline,
+                payload.candidate,
+                metric_name=payload.metric_name,
+                direction=payload.direction,
+                paired=payload.paired,
+                baseline_ids=payload.baseline_ids,
+                candidate_ids=payload.candidate_ids,
+                confidence_level=payload.confidence_level,
+                resamples=payload.resamples,
+                seed=payload.seed,
+                minimum_sample_size=payload.minimum_sample_size,
+                practical_threshold=payload.practical_threshold,
+            )
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return result.to_dict()
+
+    @app.post("/api/v1/comparisons/binary", tags=["comparisons"])
+    def compare_binary_endpoint(
+        payload: BinaryComparisonRequest,
+        identity: dict[str, str] = Depends(get_identity),
+    ) -> dict[str, Any]:
+        del identity
+        try:
+            result = compare_binary(
+                payload.baseline_successes,
+                payload.baseline_total,
+                payload.candidate_successes,
+                payload.candidate_total,
+                metric_name=payload.metric_name,
+                direction=payload.direction,
+                confidence_level=payload.confidence_level,
+                minimum_sample_size=payload.minimum_sample_size,
+                practical_threshold=payload.practical_threshold,
+            )
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return result.to_dict()
 
     @app.post(
         "/api/v1/experiments",

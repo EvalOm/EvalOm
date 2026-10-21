@@ -84,6 +84,23 @@ command invocation and an `ALLOW` release decision are separate concepts.
 The CLI uses configured paths exactly and does not search other directories
 when a dataset or report is missing.
 
+The local HTTP API is provided by the existing FastAPI application:
+
+```bash
+evalom-api
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/api/v1/task-profiles/bug_fix
+```
+
+Available API surfaces include workspace-scoped experiments and verification
+reports, binary and continuous comparison endpoints, task-profile inspection,
+readiness, and the existing API-key authentication routes. API request
+validation returns `422`; missing resources return `404`; unauthenticated
+requests return `401`; and insufficient or failed assurance remains in the
+structured response rather than being confused with HTTP transport failure.
+Verification and comparison endpoints are synchronous and locally bounded;
+they do not execute request-supplied code or require a cloud service.
+
 ## API authentication and workspaces
 
 The API keeps unauthenticated local-development behavior when no admin key is configured. Do not expose that mode to a network or use it for shared data. To enable bearer API-key authentication, configure a high-entropy bootstrap key (at least 32 characters) before starting the API:

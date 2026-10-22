@@ -201,6 +201,21 @@ are skipped when no DSN is configured.
 
 ## Production hardening sequence
 
+## End-to-end validation
+
+The repository includes representative end-to-end validation scenarios in
+`tests/test_end_to_end_validation.py`. They exercise public interfaces across
+dataset loading, exact-match and retrieval evaluation, report serialization,
+verification, evidence-aware release policy decisions, agent artifact
+verification, HTTP report persistence, and workspace isolation.
+
+These scenarios use local deterministic fixtures only. They validate contract
+integration and fail-closed behavior; they are not evidence that a particular
+model, dataset, production workload, or deployment environment is reliable.
+Real-world validation should supply representative domain data, independently
+verified references, and deployment-specific operational checks without
+interpreting a passing test as a production guarantee.
+
 1. Require TLS for any non-loopback bootstrap/API-key deployment: set `EVALOM_ALLOW_REMOTE_ACCESS=1` only with both `EVALOM_TLS_CERTFILE` and `EVALOM_TLS_KEYFILE`, and keep the secret material in a protected secret manager or mounted file system.
 2. Review secret rotation and reverse-proxy configuration before exposing a shared service.
 3. Run the opt-in PostgreSQL integration suite against a real database, then add concurrency/load and backup/restore drills before multi-node deployments.

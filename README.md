@@ -272,6 +272,20 @@ metadata fingerprint. Fingerprints exclude fields that look like credentials
 or secrets, but a fingerprint is not evidence that a run is correct or
 fully reproducible.
 
+### End-to-end validation
+
+Run the deterministic integration scenarios with:
+
+```bash
+PYTHONPATH=src pytest -q tests/test_end_to_end_validation.py
+```
+
+The scenarios cover a representative support/RAG workflow, report
+round-tripping, explicit evidence requirements that block release, independent
+agent artifact verification, HTTP report persistence, and workspace isolation.
+They validate EvalOm contract integration locally; they do not establish model
+quality or production reliability for an external workload.
+
 ## Product status
 
 The package currently provides the local evaluation runner, dataset validation, retrieval metrics, experiment tracking, quality gates, JSON/HTML reports, a verification engine, persisted verification reports, and a lightweight release policy engine for gating deployment decisions. The API is intended for local or single-instance use. Loopback deployments may use the local admin identity; when a bootstrap API key is configured, API-key authentication and workspace isolation apply. Non-loopback deployment additionally requires explicit remote access opt-in and TLS certificate/key files. PostgreSQL support and collaborative review remain deployment-specific capabilities rather than guarantees of this local-first core.

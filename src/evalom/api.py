@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -49,12 +50,12 @@ class ExperimentUpdate(BaseModel):
 
 class VerificationRequest(BaseModel):
     records: list[dict[str, Any]] = Field(default_factory=list, max_length=10_000)
-    dataset_name: str = "unknown"
-    dataset_version: str = "v1"
+    dataset_name: str = Field(default="unknown", min_length=1, max_length=200)
+    dataset_version: str = Field(default="v1", min_length=1, max_length=200)
     experiment_id: str | None = None
-    sample_size: int | None = None
-    evaluator_agreement: float | None = None
-    human_agreement: float | None = None
+    sample_size: int | None = Field(default=None, ge=0, le=1_000_000)
+    evaluator_agreement: float | None = Field(default=None, ge=0, le=1)
+    human_agreement: float | None = Field(default=None, ge=0, le=1)
     policy: dict[str, Any] | None = None
 
 
@@ -66,7 +67,7 @@ class ContinuousComparisonRequest(BaseModel):
     paired: bool = False
     baseline_ids: list[str] | None = Field(default=None, max_length=10_000)
     candidate_ids: list[str] | None = Field(default=None, max_length=10_000)
-    confidence_level: float = 0.95
+    confidence_level: float = Field(default=0.95, gt=0, lt=1)
     resamples: int = Field(default=1000, ge=1, le=10_000)
     seed: int | None = 0
     minimum_sample_size: int | None = Field(default=None, ge=0)
@@ -80,7 +81,7 @@ class BinaryComparisonRequest(BaseModel):
     candidate_total: int = Field(ge=0)
     metric_name: str = Field(default="binary_metric", min_length=1, max_length=200)
     direction: Literal["higher_is_better", "lower_is_better", "none"] = "higher_is_better"
-    confidence_level: float = 0.95
+    confidence_level: float = Field(default=0.95, gt=0, lt=1)
     minimum_sample_size: int | None = Field(default=None, ge=0)
     practical_threshold: float | None = Field(default=None, ge=0)
 
@@ -131,6 +132,15 @@ def _validate_runtime_security(
         raise ValueError(
             "Remote API exposure requires both EVALOM_TLS_CERTFILE and EVALOM_TLS_KEYFILE to be set when EVALOM_ALLOW_REMOTE_ACCESS=1."
         )
+
+
+def _validate_tls_files(certfile: str | None, keyfile: str | None) -> None:
+    for label, value in (("TLS certificate", certfile), ("TLS private key", keyfile)):
+        if not value:
+            raise ValueError(f"{label} path is required for remote API access.")
+        path = Path(value)
+        if not path.is_file():
+            raise ValueError(f"{label} file is missing or is not a regular file.")
 
 
 def create_app(
@@ -577,8 +587,13 @@ def create_app(
         ) is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
-        normalized = EvaluationImportLayer.normalize_records(payload.records)
-        summary = EvaluationImportLayer.summarize(normalized)
+        try:
+            normalized = EvaluationImportLayer.normalize_records(payload.records)
+            if any(not math.isfinite(float(item["score"])) for item in normalized):
+                raise ValueError("Evaluation scores must be finite numbers.")
+            summary = EvaluationImportLayer.summarize(normalized)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise HTTPException(status_code=422, detail="Invalid evaluation record payload.") from error
         metric_scores = []
         sample_results = []
         grouped: dict[str, list[float]] = {}
@@ -671,6 +686,8 @@ def run() -> None:
         certfile=certfile,
         keyfile=keyfile,
     )
+    if not _is_loopback_host(host):
+        _validate_tls_files(certfile, keyfile)
     uvicorn.run(
         "evalom.api:app",
         host=host,

@@ -19,18 +19,27 @@ class Sample:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Sample":
+        if not isinstance(payload, dict):
+            raise ValueError("Each sample must be an object.")
         if "id" not in payload or "input" not in payload:
             raise ValueError("Each sample must have an 'id' and 'input' field.")
+        if payload["id"] is None or payload["input"] is None:
+            raise ValueError("Sample 'id' and 'input' fields cannot be null.")
 
         expected_context = payload.get("expected_context", [])
         if expected_context is None:
             expected_context = []
+        if not isinstance(expected_context, list):
+            raise ValueError("Sample 'expected_context' must be a list when provided.")
+        metadata = payload.get("metadata", {})
+        if metadata is None or not isinstance(metadata, dict):
+            raise ValueError("Sample 'metadata' must be an object when provided.")
         return cls(
             id=str(payload["id"]),
             input=str(payload["input"]),
             expected_answer=payload.get("expected_answer"),
             expected_context=list(expected_context),
-            metadata=dict(payload.get("metadata", {})),
+            metadata=dict(metadata),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -50,13 +59,22 @@ class EvaluationDataset:
     def __init__(self, samples: Iterable[Sample | dict[str, Any]], name: str = "dataset", version: str = "v1"):
         self.name = name
         self.version = version
-        self.samples = [Sample.from_dict(sample) if isinstance(sample, dict) else sample for sample in samples]
+        self.samples = []
+        for sample in samples:
+            if isinstance(sample, dict):
+                self.samples.append(Sample.from_dict(sample))
+            elif isinstance(sample, Sample):
+                self.samples.append(sample)
+            else:
+                raise ValueError("Dataset samples must be objects or Sample instances.")
 
     @classmethod
     def from_jsonl(cls, path: str | Path, name: str | None = None, version: str = "v1") -> "EvaluationDataset":
         dataset_path = Path(path)
         samples = []
-        for line_number, line in enumerate(dataset_path.read_text(encoding="utf-8").splitlines(), start=1):
+        for line_number, line in enumerate(
+            dataset_path.read_text(encoding="utf-8-sig").split("\n"), start=1
+        ):
             stripped = line.strip()
             if not stripped:
                 continue
@@ -84,13 +102,30 @@ class EvaluationDataset:
         dataset_path = Path(path)
         with dataset_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
-            samples = [Sample.from_dict({
-                "id": row.get("id", idx),
-                "input": row.get("input", ""),
-                "expected_answer": row.get("expected_answer"),
-                "expected_context": row.get("expected_context", "").split("|") if row.get("expected_context") else [],
-                "metadata": {key: value for key, value in row.items() if key not in {"id", "input", "expected_answer", "expected_context"}},
-            }) for idx, row in enumerate(reader, start=1)]
+            if not reader.fieldnames:
+                raise ValueError(f"CSV dataset must include a header: {dataset_path}")
+            missing = {"id", "input"} - set(reader.fieldnames)
+            if missing:
+                raise ValueError(
+                    f"CSV dataset is missing required column(s): {', '.join(sorted(missing))}."
+                )
+            samples = []
+            for row_number, row in enumerate(reader, start=2):
+                if None in row:
+                    raise ValueError(f"CSV row {row_number} has more fields than the header.")
+                if any(value is None for value in row.values()):
+                    raise ValueError(f"CSV row {row_number} has fewer fields than the header.")
+                samples.append(Sample.from_dict({
+                    "id": row["id"],
+                    "input": row["input"],
+                    "expected_answer": row.get("expected_answer"),
+                    "expected_context": row.get("expected_context", "").split("|")
+                    if row.get("expected_context") else [],
+                    "metadata": {
+                        key: value for key, value in row.items()
+                        if key not in {"id", "input", "expected_answer", "expected_context"}
+                    },
+                }))
         return cls(samples=samples, name=name or dataset_path.stem, version=version)
 
     @classmethod
@@ -108,9 +143,17 @@ class EvaluationDataset:
     def validate(self) -> None:
         if not self.samples:
             raise ValueError("Dataset cannot be empty.")
+        identifiers: set[str] = set()
         for sample in self.samples:
             if not sample.id or not sample.input:
                 raise ValueError(f"Sample {sample.id or '<unknown>'} is missing required fields.")
+            if sample.id in identifiers:
+                raise ValueError(f"Duplicate sample identifier: {sample.id!r}.")
+            identifiers.add(sample.id)
+            if not isinstance(sample.metadata, dict):
+                raise ValueError(f"Sample {sample.id!r} metadata must be an object.")
+            if not isinstance(sample.expected_context, list):
+                raise ValueError(f"Sample {sample.id!r} expected_context must be a list.")
 
     def filter(self, predicate: Callable[[Sample], bool]) -> "EvaluationDataset":
         return EvaluationDataset([sample for sample in self.samples if predicate(sample)], name=self.name, version=self.version)

@@ -91,6 +91,16 @@ class EvaluationRunner:
         self.dataset.validate()
         sample_metrics = []
         sample_results = []
+        evaluator_counts: dict[str, int] = {}
+        evaluator_names: list[str] = []
+        for evaluator in self.evaluators:
+            base_name = str(evaluator.name)
+            evaluator_counts[base_name] = evaluator_counts.get(base_name, 0) + 1
+            evaluator_names.append(
+                base_name
+                if evaluator_counts[base_name] == 1
+                else f"{base_name}#{evaluator_counts[base_name]}"
+            )
 
         for sample in self.dataset.samples:
             row = {"id": sample.id, "input": sample.input, "expected_answer": sample.expected_answer, "expected_context": sample.expected_context}
@@ -103,11 +113,13 @@ class EvaluationRunner:
 
             row["output"] = output
             evaluator_scores = []
-            for evaluator in self.evaluators:
+            for evaluator, result_name in zip(self.evaluators, evaluator_names):
                 result = evaluator.evaluate(row, output)
+                result = dict(result)
+                result["name"] = result_name
                 evaluator_scores.append({
-                    "name": result["name"],
-                    "score": result["score"],
+                    **result,
+                    "name": result_name,
                     "passed": result.get("passed", False),
                     "status": result.get("status", "valid"),
                 })
@@ -120,6 +132,7 @@ class EvaluationRunner:
                 "result": evaluator_scores,
             })
             sample_metrics.extend({
+                **metric,
                 "sample_id": sample.id,
                 "name": metric["name"],
                 "score": metric["score"],

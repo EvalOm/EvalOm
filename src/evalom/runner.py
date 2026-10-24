@@ -156,17 +156,108 @@ class EvaluationRunner:
     def compare_runs(cls, first: EvaluationRunResult, second: EvaluationRunResult) -> dict[str, Any]:
         results = {}
         metrics = sorted({metric["name"] for metric in first.metrics} | {metric["name"] for metric in second.metrics})
+        first_metadata = first.metadata
+        second_metadata = second.metadata
+        dataset_mismatch = (
+            first.dataset_name != second.dataset_name
+            or first.dataset_version != second.dataset_version
+            or (
+                first_metadata.get("dataset_hash") is not None
+                and second_metadata.get("dataset_hash") is not None
+                and first_metadata["dataset_hash"] != second_metadata["dataset_hash"]
+            )
+        )
         for metric_name in metrics:
             first_values = [metric["score"] for metric in first.metrics if metric["name"] == metric_name]
             second_values = [metric["score"] for metric in second.metrics if metric["name"] == metric_name]
-            first_avg = sum(first_values) / len(first_values) if first_values else 0.0
-            second_avg = sum(second_values) / len(second_values) if second_values else 0.0
+            if not first_values or not second_values:
+                comparison = {
+                    "metric_name": metric_name,
+                    "baseline_value": sum(first_values) / len(first_values) if first_values else None,
+                    "candidate_value": sum(second_values) / len(second_values) if second_values else None,
+                    "difference": None,
+                    "difference_convention": "candidate - baseline",
+                    "direction": "higher_is_better",
+                    "interpretation": "uncertain",
+                    "status": "unavailable",
+                    "evidence_status": "missing_metric",
+                    "design": "independent",
+                    "method": None,
+                    "confidence_level": None,
+                    "confidence_interval": {"lower": None, "upper": None},
+                    "statistically_supported": None,
+                    "practical_threshold": None,
+                    "practically_significant": None,
+                    "warnings": ["Metric is missing from one run."],
+                    "limitations": [],
+                    "metadata": {},
+                }
+                results[metric_name] = {
+                    "baseline": comparison["baseline_value"],
+                    "candidate": comparison["candidate_value"],
+                    "delta": None,
+                    "delta_pct": None,
+                    "comparison": comparison,
+                }
+                continue
+            first_avg = sum(first_values) / len(first_values)
+            second_avg = sum(second_values) / len(second_values)
             delta = second_avg - first_avg
+            if dataset_mismatch:
+                comparison = {
+                    "metric_name": metric_name,
+                    "baseline_value": first_avg,
+                    "candidate_value": second_avg,
+                    "difference": delta,
+                    "difference_convention": "candidate - baseline",
+                    "direction": "higher_is_better",
+                    "interpretation": "uncertain",
+                    "status": "insufficient_evidence",
+                    "evidence_status": "incompatible",
+                    "design": "independent",
+                    "method": None,
+                    "confidence_level": None,
+                    "confidence_interval": {"lower": None, "upper": None},
+                    "statistically_supported": None,
+                    "practical_threshold": None,
+                    "practically_significant": None,
+                    "warnings": ["Dataset identities differ; statistical comparison was not performed."],
+                    "limitations": [],
+                    "metadata": {},
+                }
+                results[metric_name] = {
+                    "baseline": first_avg,
+                    "candidate": second_avg,
+                    "delta": delta,
+                    "delta_pct": (delta / first_avg) * 100.0 if first_avg else None,
+                    "comparison": comparison,
+                }
+                continue
+            first_metric_rows = [
+                metric for metric in first.metrics if metric["name"] == metric_name
+            ]
+            second_metric_rows = [
+                metric for metric in second.metrics if metric["name"] == metric_name
+            ]
+            first_ids = [metric.get("sample_id") for metric in first_metric_rows]
+            second_ids = [metric.get("sample_id") for metric in second_metric_rows]
+            matching_ids = (
+                first_ids
+                and second_ids
+                and None not in first_ids
+                and None not in second_ids
+                and len(set(first_ids)) == len(first_ids)
+                and len(set(second_ids)) == len(second_ids)
+                and set(first_ids) == set(second_ids)
+            )
             comparison = compare_continuous(
                 first_values,
                 second_values,
                 metric_name=metric_name,
                 direction="higher_is_better",
+                paired=bool(matching_ids),
+                baseline_ids=first_ids if matching_ids else None,
+                candidate_ids=second_ids if matching_ids else None,
             )
             results[metric_name] = {
                 "baseline": first_avg,

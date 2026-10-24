@@ -32,6 +32,37 @@ def _normalize_confidence(value: Any) -> float:
     return numeric
 
 
+def _bootstrap_difference_interval(
+    baseline: list[float],
+    candidate: list[float],
+    *,
+    confidence_level: float,
+    resamples: int,
+    seed: int | None,
+) -> tuple[float, float]:
+    import random
+
+    rng = random.Random(seed)
+    differences = sorted(
+        statistics.fmean(
+            candidate[rng.randrange(len(candidate))] for _ in candidate
+        ) - statistics.fmean(
+            baseline[rng.randrange(len(baseline))] for _ in baseline
+        )
+        for _ in range(resamples)
+    )
+    alpha = (1 - confidence_level) / 2
+    def percentile(probability: float) -> float:
+        position = probability * (len(differences) - 1)
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return differences[lower]
+        fraction = position - lower
+        return differences[lower] + (differences[upper] - differences[lower]) * fraction
+    return percentile(alpha), percentile(1 - alpha)
+
+
 def _validate_values(values: Sequence[Any], name: str) -> list[float]:
     if isinstance(values, (str, bytes)):
         raise ValueError(f"{name} must be a sequence of finite numbers.")
@@ -122,7 +153,7 @@ class ComparisonResult:
 def _interpret(difference: float | None, direction: str, supported: bool | None) -> str:
     if difference is None or direction == "none":
         return "not_applicable" if direction == "none" else "uncertain"
-    if supported is False:
+    if supported is not True:
         return "uncertain"
     if difference == 0:
         return "no_change"
@@ -290,24 +321,31 @@ def compare_continuous(
         lower = upper = None
         supported = None
     else:
-        variance = statistics.variance(baseline_values) / len(baseline_values)
-        variance += statistics.variance(candidate_values) / len(candidate_values)
-        z_value = statistics.NormalDist().inv_cdf((1 + level) / 2)
-        half_width = z_value * math.sqrt(variance)
-        lower, upper = difference - half_width, difference + half_width
+        lower, upper = _bootstrap_difference_interval(
+            baseline_values, candidate_values,
+            confidence_level=level, resamples=resamples, seed=seed,
+        )
         supported = not (lower <= 0 <= upper)
     adequate = baseline_stats.status == "valid" and candidate_stats.status == "valid" and lower is not None
     return _result(
         metric_name=metric_name, baseline=baseline_mean, candidate=candidate_mean,
         difference=difference, direction=direction, design="independent",
-        method="independent_normal_approximation", confidence_level=level,
+        method="independent_percentile_bootstrap", confidence_level=level,
         interval={"lower": lower, "upper": upper}, supported=supported,
         evidence_status="adequate" if adequate else "insufficient",
         status="verified" if adequate else "insufficient_evidence",
         warnings=warnings,
-        limitations=["Independent normal approximation assumes independent observations and finite sample variance."],
+        limitations=[
+            "Independent bootstrap resamples assume independent, representative observations.",
+            "The interval does not correct sampling bias, correlation, or distribution shift.",
+        ],
         practical_threshold=practical_threshold,
-        metadata={"baseline_count": len(baseline_values), "candidate_count": len(candidate_values)},
+        metadata={
+            "baseline_count": len(baseline_values),
+            "candidate_count": len(candidate_values),
+            "resamples": resamples,
+            "seed": seed,
+        },
     )
 
 
@@ -356,22 +394,20 @@ def compare_binary(
             limitations=[f"Both groups require at least {minimum_sample_size} observations."],
         )
     difference = candidate_stats.observed_success_rate - baseline_stats.observed_success_rate
-    variance = (
-        baseline_stats.observed_success_rate * (1 - baseline_stats.observed_success_rate) / baseline_total
-        + candidate_stats.observed_success_rate * (1 - candidate_stats.observed_success_rate) / candidate_total
-    )
-    z_value = statistics.NormalDist().inv_cdf((1 + level) / 2)
-    half_width = z_value * math.sqrt(variance)
-    lower, upper = difference - half_width, difference + half_width
+    lower = candidate_stats.lower_bound - baseline_stats.upper_bound
+    upper = candidate_stats.upper_bound - baseline_stats.lower_bound
     return _result(
         metric_name=metric_name, baseline=baseline_stats.observed_success_rate,
         candidate=candidate_stats.observed_success_rate, difference=difference,
-        direction=direction, design="independent", method="two_proportion_normal_approximation",
+        direction=direction, design="independent", method="newcombe_wilson_difference",
         confidence_level=level, interval={"lower": lower, "upper": upper},
         supported=not (lower <= 0 <= upper), evidence_status="adequate", status="verified",
         practical_threshold=practical_threshold,
         metadata={"baseline_statistics": baseline_stats.to_dict(), "candidate_statistics": candidate_stats.to_dict()},
-        limitations=["This is an independent-sample approximation; paired binary comparisons are unsupported."],
+        limitations=[
+            "Newcombe's interval combines independent Wilson score intervals.",
+            "Paired binary comparisons are unsupported.",
+        ],
     )
 
 

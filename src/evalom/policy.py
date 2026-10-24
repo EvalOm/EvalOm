@@ -27,6 +27,7 @@ _POLICY_FIELDS = {
 }
 _CHECK_STATUSES = {"passed", "failed", "not_run", "indeterminate"}
 _POLICY_VERSION = "1.0"
+_DIRECTIONS = {"higher_is_better", "lower_is_better", "none"}
 
 
 def _normalize_confidence_level(value: Any) -> float:
@@ -183,19 +184,63 @@ class ReleasePolicy:
         else:
             raise TypeError("Verification must be a dict-like result or an object with to_dict().")
 
+        failures: list[str] = []
+
+        def numeric(name: str, value: Any, *, required: bool = True) -> float | None:
+            if value is None:
+                if required:
+                    failures.append(f"Required metric {name!r} is missing.")
+                return None
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                failures.append(f"Metric {name!r} is invalid; expected a finite number.")
+                return None
+            number = float(value)
+            if not math.isfinite(number):
+                failures.append(f"Metric {name!r} is invalid; expected a finite number.")
+                return None
+            return number
+
         risk_level = str(summary.get("risk_level") or "HIGH").upper()
-        confidence_score = float(summary.get("confidence_score", 0.0))
-        dataset_quality = float(summary.get("dataset_quality", summary.get("dataset_health", {}).get("quality_score", 0.0)))
-        evaluator_reliability = float(summary.get("evaluator_reliability", 0.0))
-        statistical_confidence = float(summary.get("statistical_confidence", 0.0))
-        lower_bound = float(summary.get("lower_confidence_bound", summary.get("confidence_interval", {}).get("lower", statistical_confidence)))
-        dataset_health = summary.get("dataset_health") if isinstance(summary.get("dataset_health"), dict) else {}
-        duplicate_ratio = float(dataset_health.get("duplicate_ratio", 0.0))
-        distribution_shift = float(dataset_health.get("distribution_shift", 0.0))
+        confidence_score = numeric("confidence_score", summary.get("confidence_score"))
+        dataset_health = summary.get("dataset_health")
+        if dataset_health is not None and not isinstance(dataset_health, dict):
+            failures.append("dataset_health is invalid; expected a dictionary.")
+            dataset_health = {}
+        dataset_health = dataset_health or {}
+        dataset_quality = numeric(
+            "dataset_quality",
+            summary.get("dataset_quality") if "dataset_quality" in summary else dataset_health.get("quality_score"),
+        )
+        evaluator_reliability = numeric("evaluator_reliability", summary.get("evaluator_reliability"))
+        statistical_confidence = numeric("statistical_confidence", summary.get("statistical_confidence"))
+        interval = summary.get("confidence_interval")
+        if interval is not None and not isinstance(interval, dict):
+            failures.append("confidence_interval is invalid; expected a dictionary.")
+            interval = {}
+        lower_bound = numeric(
+            "lower_confidence_bound",
+            summary["lower_confidence_bound"] if "lower_confidence_bound" in summary else (interval or {}).get("lower"),
+            required="lower_confidence_bound" in summary or bool(interval and "lower" in interval),
+        )
+        if lower_bound is None:
+            lower_bound = statistical_confidence
+        duplicate_ratio = numeric(
+            "duplicate_ratio",
+            dataset_health.get("duplicate_ratio"),
+            required="duplicate_ratio" in dataset_health,
+        )
+        distribution_shift = numeric(
+            "distribution_shift",
+            dataset_health.get("distribution_shift"),
+            required="distribution_shift" in dataset_health,
+        )
+        if duplicate_ratio is None:
+            failures.append("Duplicate ratio evidence is unavailable.")
+        if distribution_shift is None:
+            failures.append("Distribution-shift evidence is unavailable.")
         issues = [str(issue) for issue in summary.get("issues", [])]
         binary_statistics = summary.get("binary_statistics")
 
-        failures: list[str] = []
         passed_requirements: list[str] = []
         failed_requirements: list[str] = []
         not_run_requirements: list[str] = []
@@ -270,10 +315,13 @@ class ReleasePolicy:
                 failures.append(f"Required comparison {metric!r} is unresolved.")
                 continue
             difference = comparison.get("difference")
-            if not isinstance(difference, (int, float)) or not math.isfinite(float(difference)):
+            if isinstance(difference, bool) or not isinstance(difference, (int, float)) or not math.isfinite(float(difference)):
                 failures.append(f"Required comparison {metric!r} has no valid difference.")
                 continue
             direction = comparison.get("direction", "higher_is_better")
+            if direction not in _DIRECTIONS:
+                failures.append(f"Required comparison {metric!r} has an invalid direction.")
+                continue
             regression = -float(difference) if direction == "higher_is_better" else float(difference)
             if requirement.get("max_regression") is not None and regression > float(requirement["max_regression"]):
                 failures.append(f"Comparison {metric!r} exceeds the permitted regression threshold.")
@@ -303,27 +351,27 @@ class ReleasePolicy:
             failures.append(f"Unknown verification risk level {risk_level!r}; release is blocked.")
         if _RISK_ORDER.get(risk_level, 2) > _RISK_ORDER.get(self.max_risk_level.upper(), 2):
             failures.append(f"Risk level {risk_level} exceeds the configured max risk {self.max_risk_level.upper()}.")
-        if confidence_score < self.min_confidence_score:
+        if confidence_score is not None and confidence_score < self.min_confidence_score:
             failures.append(
                 f"Confidence score {confidence_score:.2f} is below the required minimum of {self.min_confidence_score:.2f}."
             )
-        if dataset_quality < self.min_dataset_quality:
+        if dataset_quality is not None and dataset_quality < self.min_dataset_quality:
             failures.append(
                 f"Dataset quality {dataset_quality:.4f} is below the required minimum of {self.min_dataset_quality:.4f}."
             )
-        if evaluator_reliability < self.min_evaluator_reliability:
+        if evaluator_reliability is not None and evaluator_reliability < self.min_evaluator_reliability:
             failures.append(
                 f"Evaluator reliability {evaluator_reliability:.4f} is below the required minimum of {self.min_evaluator_reliability:.4f}."
             )
-        if lower_bound < self.min_statistical_confidence:
+        if lower_bound is not None and lower_bound < self.min_statistical_confidence:
             failures.append(
                 f"Lower confidence bound {lower_bound:.4f} is below the required minimum of {self.min_statistical_confidence:.4f}."
             )
-        if duplicate_ratio > self.max_duplicate_ratio:
+        if duplicate_ratio is not None and duplicate_ratio > self.max_duplicate_ratio:
             failures.append(
                 f"Duplicate ratio {duplicate_ratio:.4f} exceeds the maximum allowed {self.max_duplicate_ratio:.4f}."
             )
-        if distribution_shift > self.max_distribution_shift:
+        if distribution_shift is not None and distribution_shift > self.max_distribution_shift:
             failures.append(
                 f"Distribution shift {distribution_shift:.4f} exceeds the maximum allowed {self.max_distribution_shift:.4f}."
             )
@@ -332,7 +380,7 @@ class ReleasePolicy:
         warnings: list[str] = []
         for issue in issues:
             normalized = issue.strip().lower()
-            if any(normalized.startswith(prefix) for prefix in allowed):
+            if normalized in allowed:
                 continue
             warnings.append(issue)
         if self.block_on_issues:

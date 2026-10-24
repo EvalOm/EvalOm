@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -927,7 +928,18 @@ class SQLiteExperimentStore:
         dataset_name = str(payload.get("dataset_name") or verification.get("dataset_name") or "unknown")
         dataset_version = str(payload.get("dataset_version") or verification.get("dataset_version") or "unknown")
         risk_level = str(payload.get("risk_level") or verification.get("risk_level") or "UNKNOWN").upper()
-        confidence_score = float(payload.get("confidence_score") or verification.get("confidence_score") or 0.0)
+        raw_confidence = (
+            payload["confidence_score"]
+            if "confidence_score" in payload
+            else verification.get("confidence_score")
+        )
+        if (
+            isinstance(raw_confidence, bool)
+            or not isinstance(raw_confidence, (int, float))
+            or not math.isfinite(float(raw_confidence))
+        ):
+            raise ValueError("confidence_score must be a finite numeric value.")
+        confidence_score = float(raw_confidence)
         policy = payload.get("policy_decision")
         policy_decision = (
             str(policy.get("decision")).upper()

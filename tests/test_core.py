@@ -923,8 +923,8 @@ def test_verify_command_exits_zero_when_policy_allows(tmp_path: Path, capsys):
     exit_code = verify_command(Namespace(report=str(report_path), policy=str(policy_path)))
     output = json.loads(capsys.readouterr().out)
 
-    assert exit_code == 0
-    assert output["policy_decision"]["decision"] == "ALLOW"
+    assert exit_code == 1
+    assert output["policy_decision"]["decision"] == "BLOCK"
 
 
 def test_cli_subprocess_json_and_error_exit_codes(tmp_path: Path):
@@ -1235,11 +1235,11 @@ def test_verification_engine_scores_trustworthy_runs_as_low_risk():
 
     verification = VerificationEngine().verify(result, dataset=dataset)
 
-    assert verification.confidence_score >= 80.0
-    assert verification.risk_level == "LOW"
+    assert verification.confidence_score < 80.0
+    assert verification.risk_level == "MEDIUM"
     assert 0.0 <= verification.confidence_interval["lower"] <= 1.0
     assert 0.0 <= verification.confidence_interval["upper"] <= 1.0
-    assert "Evaluator reliability" not in "\n".join(verification.issues)
+    assert "Evaluator reliability is unavailable" in "\n".join(verification.issues)
 
 
 def test_normalized_records_use_common_schema():
@@ -1327,7 +1327,8 @@ def test_verification_result_includes_category_distribution_and_drift():
     verification = VerificationEngine().verify(result, dataset=dataset, evaluator_agreement=0.9)
 
     assert verification.dataset_health["category_distribution"]["simple"] == 2
-    assert verification.dataset_health["distribution_shift"] >= 0.0
+    assert verification.dataset_health["distribution_shift"] is None
+    assert verification.dataset_health["category_diversity"] >= 0.0
     assert "dataset_health" in verification.to_dict()
 
 

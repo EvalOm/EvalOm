@@ -102,24 +102,28 @@ def normalize_evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
 @dataclass
 class DatasetHealth:
     sample_size: int
-    duplicate_ratio: float
-    coverage_ratio: float
-    drift_score: float
-    quality_score: float
-    distribution_shift: float = 0.0
-    edge_case_coverage: float = 0.0
+    duplicate_ratio: float | None
+    coverage_ratio: float | None
+    drift_score: float | None
+    quality_score: float | None
+    distribution_shift: float | None = None
+    edge_case_coverage: float | None = None
     category_distribution: dict[str, int] = field(default_factory=dict)
+    category_diversity: float | None = None
+    coverage_basis: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample_size": self.sample_size,
-            "duplicate_ratio": round(self.duplicate_ratio, 4),
-            "coverage_ratio": round(self.coverage_ratio, 4),
-            "drift_score": round(self.drift_score, 4),
-            "quality_score": round(self.quality_score, 4),
-            "distribution_shift": round(self.distribution_shift, 4),
-            "edge_case_coverage": round(self.edge_case_coverage, 4),
+            "duplicate_ratio": round(self.duplicate_ratio, 4) if self.duplicate_ratio is not None else None,
+            "coverage_ratio": round(self.coverage_ratio, 4) if self.coverage_ratio is not None else None,
+            "drift_score": round(self.drift_score, 4) if self.drift_score is not None else None,
+            "quality_score": round(self.quality_score, 4) if self.quality_score is not None else None,
+            "distribution_shift": round(self.distribution_shift, 4) if self.distribution_shift is not None else None,
+            "edge_case_coverage": round(self.edge_case_coverage, 4) if self.edge_case_coverage is not None else None,
             "category_distribution": dict(self.category_distribution),
+            "category_diversity": round(self.category_diversity, 4) if self.category_diversity is not None else None,
+            "coverage_basis": self.coverage_basis,
         }
 
 
@@ -128,8 +132,8 @@ class EvaluationVerificationResult:
     confidence_score: float
     risk_level: str
     recommendation: str
-    evaluator_reliability: float
-    dataset_quality: float
+    evaluator_reliability: float | None
+    dataset_quality: float | None
     statistical_confidence: float
     issues: list[str] = field(default_factory=list)
     confidence_interval: dict[str, float] = field(default_factory=lambda: {"lower": 0.0, "upper": 0.0})
@@ -149,8 +153,8 @@ class EvaluationVerificationResult:
             "confidence_score": round(self.confidence_score, 2),
             "risk_level": self.risk_level,
             "recommendation": self.recommendation,
-            "evaluator_reliability": round(self.evaluator_reliability, 4),
-            "dataset_quality": round(self.dataset_quality, 4),
+            "evaluator_reliability": round(self.evaluator_reliability, 4) if self.evaluator_reliability is not None else None,
+            "dataset_quality": round(self.dataset_quality, 4) if self.dataset_quality is not None else None,
             "statistical_confidence": round(self.statistical_confidence, 4),
             "lower_confidence_bound": round(float(lower_bound), 4) if lower_bound is not None else None,
             "confidence_level": round(float(self.confidence_level), 4),
@@ -194,12 +198,13 @@ class VerificationEngine:
             sample_size = fallback_sample_size
             return DatasetHealth(
                 sample_size=sample_size,
-                duplicate_ratio=0.0,
-                coverage_ratio=0.5 if sample_size > 0 else 0.0,
-                drift_score=1.0,
-                quality_score=0.5 if sample_size > 0 else 0.0,
-                distribution_shift=0.0,
-                edge_case_coverage=0.5 if sample_size > 0 else 0.0,
+                duplicate_ratio=None,
+                coverage_ratio=None,
+                drift_score=None,
+                quality_score=None,
+                distribution_shift=None,
+                edge_case_coverage=None,
+                coverage_basis=None,
             )
 
         sample_size = len(dataset.samples)
@@ -232,7 +237,7 @@ class VerificationEngine:
         coverage_ratio = covered_samples / sample_size if sample_size else 0.0
         edge_case_coverage = hard_edge_cases / sample_size if sample_size else 0.0
         max_group_size = max(category_distribution.values()) if category_distribution else 0
-        distribution_shift = _clamp(1.0 - (max_group_size / sample_size) if sample_size else 0.0, 0.0, 1.0)
+        category_diversity = _clamp(1.0 - (max_group_size / sample_size) if sample_size else 0.0, 0.0, 1.0)
         drift_score = _clamp(1.0 - (0.4 * (1.0 - coverage_ratio)) - (0.6 * duplicate_ratio), 0.0, 1.0)
         quality_score = _clamp(1.0 - duplicate_ratio * 0.75 - max(0.0, 0.5 - coverage_ratio) * 0.5, 0.0, 1.0)
 
@@ -242,9 +247,11 @@ class VerificationEngine:
             coverage_ratio=coverage_ratio,
             drift_score=drift_score,
             quality_score=quality_score,
-            distribution_shift=distribution_shift,
+            distribution_shift=None,
             edge_case_coverage=edge_case_coverage,
             category_distribution=category_distribution,
+            category_diversity=category_diversity,
+            coverage_basis="fraction of samples with expected_context; not production coverage",
         )
 
     def verify(
@@ -262,24 +269,28 @@ class VerificationEngine:
         dataset_health = self.analyze_dataset(dataset, fallback_sample_size=result.total_samples)
         if sample_size is not None:
             dataset_health.sample_size = sample_size
-            if sample_size > 0 and dataset is None:
-                dataset_health.coverage_ratio = 0.5
-                dataset_health.quality_score = 0.5
 
-        metric_scores = [float(item["score"]) for item in result.metrics]
+        metric_scores: list[float] = []
+        for item in result.metrics:
+            if not isinstance(item, dict) or isinstance(item.get("score"), bool):
+                raise ValueError("Evaluation metric scores must be numeric finite values.")
+            score = _safe_float(item.get("score"))
+            if score is None:
+                raise ValueError("Evaluation metric scores must be numeric finite values.")
+            metric_scores.append(score)
         mean_score = _average(metric_scores)
         metric_variance = 0.0 if not metric_scores else _average([(score - mean_score) ** 2 for score in metric_scores])
         stddev = (metric_variance ** 0.5) if metric_scores else 0.0
-        evaluator_reliability = _clamp(1.0 - metric_variance * 2.0, 0.0, 1.0)
+        evaluator_reliability: float | None = None
 
         agreement_score = 1.0
         if evaluator_agreement is not None:
             agreement_score = _clamp(float(evaluator_agreement), 0.0, 1.0)
-            evaluator_reliability = (evaluator_reliability + agreement_score) / 2.0
+            evaluator_reliability = agreement_score
         if human_agreement is not None:
             human_score = _clamp(float(human_agreement), 0.0, 1.0)
             agreement_score = (agreement_score + human_score) / 2.0 if evaluator_agreement is not None else human_score
-            evaluator_reliability = (evaluator_reliability + human_score) / 2.0
+            evaluator_reliability = human_score if evaluator_reliability is None else (evaluator_reliability + human_score) / 2.0
 
         effective_sample_size = dataset_health.sample_size or len(result.metrics) or result.total_samples
         heuristic_confidence = _clamp((effective_sample_size / max(self.minimum_sample_size, 1)) * 0.85, 0.0, 1.0)
@@ -331,13 +342,18 @@ class VerificationEngine:
             confidence_interval = {"lower": None, "upper": None}
             statistical_confidence = 0.0
 
-        dataset_quality = max(dataset_health.quality_score, 0.0)
-        if dataset_health.sample_size < self.minimum_sample_size:
+        dataset_quality = (
+            max(dataset_health.quality_score, 0.0)
+            if dataset_health.quality_score is not None
+            else None
+        )
+        if dataset_quality is not None and dataset_health.sample_size < self.minimum_sample_size:
             dataset_quality = min(dataset_quality, 0.9)
 
+        reliability_component = evaluator_reliability if evaluator_reliability is not None else 0.0
         confidence_score = (
-            evaluator_reliability * 0.4
-            + dataset_quality * 0.35
+            reliability_component * 0.4
+            + (dataset_quality or 0.0) * 0.35
             + heuristic_confidence * 0.25
         ) * 100.0
 
@@ -361,19 +377,21 @@ class VerificationEngine:
             issues.append("Evaluator agreement is below the recommended threshold.")
         if human_agreement is not None and human_agreement < 0.8:
             issues.append("Human agreement is below the recommended threshold.")
-        if evaluator_reliability < self.minimum_evaluator_reliability:
+        if evaluator_reliability is None:
+            issues.append("Evaluator reliability is unavailable without independent reference or agreement evidence.")
+        elif evaluator_reliability < self.minimum_evaluator_reliability:
             issues.append("Evaluator reliability is below the recommended threshold.")
-        if dataset_quality < self.minimum_dataset_quality:
+        if dataset_quality is None:
+            issues.append("Dataset quality is unavailable without a validated dataset.")
+        elif dataset_quality < self.minimum_dataset_quality:
             issues.append("Dataset quality is too weak to support a high-confidence release decision.")
         if metric_scores and statistical_confidence < self.minimum_statistical_confidence:
             issues.append("Sample size or variance makes the evaluation statistically weak.")
-        if dataset_health.duplicate_ratio > 0.05:
+        if dataset_health.duplicate_ratio is not None and dataset_health.duplicate_ratio > 0.05:
             issues.append(f"Detected {dataset_health.duplicate_ratio:.2%} duplicate or repeated inputs in the dataset.")
-        if dataset_health.coverage_ratio < 0.5:
-            issues.append("The dataset coverage is low relative to the expected production mix.")
-        if dataset_health.distribution_shift > 0.35:
-            issues.append("Dataset distribution shift suggests the evaluation may not represent production traffic.")
-        if result.average_score() < 0.8 and dataset_quality >= self.minimum_dataset_quality:
+        if dataset_health.coverage_ratio is None:
+            issues.append("Dataset context coverage is unavailable without a validated dataset.")
+        if result.average_score() < 0.8 and dataset_quality is not None and dataset_quality >= self.minimum_dataset_quality:
             issues.append("The observed average score is lower than the typical release threshold.")
         if failure_breakdown:
             issue_details = ", ".join(f"{name}: {count}" for name, count in sorted(failure_breakdown.items()))

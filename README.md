@@ -286,6 +286,13 @@ agent artifact verification, HTTP report persistence, and workspace isolation.
 They validate EvalOm contract integration locally; they do not establish model
 quality or production reliability for an external workload.
 
+Assurance policies reject non-finite, invalid, or missing required metrics.
+Measured zero values remain distinct from unavailable evidence. Evaluator
+reliability is only reported when independent reference or agreement evidence
+exists; score variance alone is not treated as reliability. Dataset context
+coverage, category diversity, and production distribution shift are distinct
+quantities, and missing shift evidence cannot be interpreted as zero shift.
+
 ## Product status
 
 The package currently provides the local evaluation runner, dataset validation, retrieval metrics, experiment tracking, quality gates, JSON/HTML reports, a verification engine, persisted verification reports, and a lightweight release policy engine for gating deployment decisions. The API is intended for local or single-instance use. Loopback deployments may use the local admin identity; when a bootstrap API key is configured, API-key authentication and workspace isolation apply. Non-loopback deployment additionally requires explicit remote access opt-in and TLS certificate/key files. PostgreSQL support and collaborative review remain deployment-specific capabilities rather than guarantees of this local-first core.

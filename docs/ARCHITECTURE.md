@@ -216,6 +216,22 @@ Real-world validation should supply representative domain data, independently
 verified references, and deployment-specific operational checks without
 interpreting a passing test as a production guarantee.
 
+## Assurance metric semantics
+
+Release-policy numeric inputs are validated as finite, non-boolean numbers;
+missing or invalid required values block rather than becoming zero. A measured
+zero remains a valid zero. Comparison directions are restricted to
+`higher_is_better`, `lower_is_better`, and `none`, and issue allowances require
+exact issue-text matches.
+
+Evaluator reliability is unavailable unless independent reference or agreement
+evidence is supplied. Score variance is not used as a reliability estimate.
+Dataset `coverage_ratio` describes expected-context availability only, while
+`category_diversity` is kept separate from `distribution_shift`; distribution
+shift remains unavailable without a reference distribution. A Wilson lower
+confidence bound describes observed pass-rate uncertainty, not evaluator
+correctness or overall assurance validity.
+
 1. Require TLS for any non-loopback bootstrap/API-key deployment: set `EVALOM_ALLOW_REMOTE_ACCESS=1` only with both `EVALOM_TLS_CERTFILE` and `EVALOM_TLS_KEYFILE`, and keep the secret material in a protected secret manager or mounted file system.
 2. Review secret rotation and reverse-proxy configuration before exposing a shared service.
 3. Run the opt-in PostgreSQL integration suite against a real database, then add concurrency/load and backup/restore drills before multi-node deployments.

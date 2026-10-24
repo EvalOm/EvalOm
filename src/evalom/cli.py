@@ -58,6 +58,9 @@ def _load_report(path: str | Path) -> tuple[dict[str, Any], EvaluationRunResult]
 def init_command(args: argparse.Namespace) -> int:
     project_dir = Path(args.project_dir)
     project_name = str(getattr(args, "project_name", "demo") or "demo").strip() or "demo"
+    config_path = project_dir / "eval.yaml"
+    if config_path.exists():
+        raise FileExistsError(f"Configuration already exists: {config_path}")
     dataset_dir = project_dir / "datasets"
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,7 +74,6 @@ def init_command(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
-    config_path = project_dir / "eval.yaml"
     config_path.write_text(
         f"project:\n  name: {project_name}\n\ndataset:\n  path: datasets/{project_name}.jsonl\n\nevaluators:\n  - name: exact_match\n    type: deterministic\n\nquality_gates:\n  exact_match:\n    minimum: 0.80\n",
         encoding="utf-8",
@@ -92,27 +94,48 @@ def _load_config(path: str | Path) -> EvaluationConfig:
 
 
 def _load_app(args: argparse.Namespace):
-    if getattr(args, "app_module", None) and getattr(args, "app_function", None):
-        module = importlib.import_module(args.app_module)
-        return getattr(module, args.app_function)
-
-    def default_app(question: str):
-        return {"answer": "", "contexts": []}
-
-    return default_app
+    app_module = getattr(args, "app_module", None)
+    app_function = getattr(args, "app_function", None)
+    if bool(app_module) != bool(app_function):
+        raise ValueError("--app-module and --app-function must be supplied together.")
+    if not app_module:
+        raise ValueError(
+            "Application configuration is required: provide --app-module and --app-function."
+        )
+    try:
+        module = importlib.import_module(app_module)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(f"Unable to import application module {app_module!r}: {exc}") from exc
+    try:
+        app = getattr(module, app_function)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Application function {app_function!r} was not found in module {app_module!r}."
+        ) from exc
+    if not callable(app):
+        raise RuntimeError(f"Configured application {app_module}.{app_function} is not callable.")
+    return app
 
 
 def run_command(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
+    app = _load_app(args)
     dataset_path = (Path(args.config).parent / config.dataset_path).resolve() if not Path(config.dataset_path).is_absolute() else Path(config.dataset_path)
     dataset = EvaluationDataset.from_file(dataset_path)
-    evaluators = [build_evaluator(item) for item in config.evaluators or [{"name": "exact_match"}]]
+    if not config.evaluators:
+        raise ValueError("evaluators must contain at least one evaluator when explicitly configured.")
+    evaluators = [build_evaluator(item) for item in config.evaluators]
     runner = EvaluationRunner(dataset, evaluators, quality_gates={
         name: {"minimum": gate.minimum, "maximum": gate.maximum}
         for name, gate in config.quality_gates.items()
     })
-    app = _load_app(args)
-    result = runner.run(app, metadata={"config": config.project_name})
+    def invoke_app(question: str) -> dict[str, Any]:
+        try:
+            return app(question)
+        except Exception as exc:
+            raise RuntimeError(f"Application invocation failed: {exc}") from exc
+
+    result = runner.run(invoke_app, metadata={"config": config.project_name})
     quality_status = result.check_quality_gates()
     policy_status = None
     if config.release_policy is not None:
@@ -186,6 +209,13 @@ def compare_command(args: argparse.Namespace) -> int:
     _, second_result = _load_report(args.second)
     comparison = EvaluationRunner.compare_runs(first_result, second_result)
     _print_json(comparison)
+    if getattr(args, "fail_on_regression", False):
+        if any(
+            item.get("comparison", {}).get("status") == "verified"
+            and item.get("comparison", {}).get("interpretation") == "regression"
+            for item in comparison.values()
+        ):
+            return EXIT_ASSURANCE_FAILURE
     return EXIT_OK
 
 
@@ -222,15 +252,24 @@ def _load_policy_file(path: str | None) -> dict[str, Any] | None:
     if not p.exists():
         raise FileNotFoundError(f"Policy file not found: {path}")
     raw = p.read_text(encoding="utf-8")
-    try:
-        import yaml  # type: ignore
-
-        return yaml.safe_load(raw) or {}
-    except Exception:
+    if p.suffix.lower() == ".json":
         try:
-            return json.loads(raw)
-        except Exception:
-            raise ValueError("Policy file must be valid JSON or YAML")
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Policy file is not valid JSON: {path}") from exc
+    else:
+        try:
+            import yaml  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("PyYAML is required to load YAML policy files.") from exc
+        try:
+            payload = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            detail = f" at line {exc.problem_mark.line + 1}, column {exc.problem_mark.column + 1}" if getattr(exc, "problem_mark", None) else ""
+            raise ValueError(f"Invalid YAML policy{detail}: {exc.problem}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Policy file must contain a mapping.")
+    return payload
 
 
 def verify_command(args: argparse.Namespace) -> int:
@@ -301,6 +340,7 @@ def main() -> int:
     compare_parser = subparsers.add_parser("compare", help="Compare two evaluation reports")
     compare_parser.add_argument("first", help="First JSON report path")
     compare_parser.add_argument("second", help="Second JSON report path")
+    compare_parser.add_argument("--fail-on-regression", action="store_true")
     compare_parser.set_defaults(func=compare_command)
 
     report_parser = subparsers.add_parser("report", help="Render a report")
@@ -341,6 +381,12 @@ def main() -> int:
         return EXIT_INVALID_INPUT
     except OSError as exc:
         print(f"error: {exc}", file=os.sys.stderr)
+        return EXIT_RUNTIME_ERROR
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=os.sys.stderr)
+        return EXIT_RUNTIME_ERROR
+    except Exception as exc:
+        print(f"error: unexpected execution failure: {exc}", file=os.sys.stderr)
         return EXIT_RUNTIME_ERROR
 
 
